@@ -1,0 +1,8 @@
+# 每个非空、非注释行支持空格、制表符或 | 分隔。
+# 四列：库名 表名 开始日期 结束日期
+# 五列：视图名 库名 表名 开始日期 结束日期
+#
+# 日期支持 YYYYMMDD、YYYY-M-D、YYYY-MM-DD、YYYY/M/D、YYYY/MM/DD，输出统一为 YYYY-MM-DD。
+
+your_database partitioned_table 2025-01-01 2025-01-03
+fdm.example_view|your_database|source_table|20250101|2025/1/3

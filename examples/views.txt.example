@@ -1,0 +1,8 @@
+# 每行格式：[fdm.]视图名 开始日期 结束日期
+# 支持使用空格、制表符或 | 分隔。
+# 视图名会统一转换为小写。
+# 未输入视图库名时默认使用 fdm。
+# 日期支持 YYYYMMDD、YYYY/M/D、YYYY/MM/DD、YYYY-M-D、YYYY-MM-DD，输出统一为 YYYY-MM-DD。
+
+FDM.EXAMPLE_VIEW 20250206 2025/02/10
+ANOTHER_VIEW|2025-3-1|2025-03-03

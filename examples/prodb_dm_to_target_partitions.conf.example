@@ -1,0 +1,9 @@
+# 每个非空、非注释行是一项任务，支持空格、制表符或 | 分隔。
+# 格式：目标库名 表名 开始日期 结束日期
+# 或：视图名 目标库名 表名 开始日期 结束日期
+#
+# 日期支持 YYYYMMDD、YYYY-M-D、YYYY-MM-DD、YYYY/M/D、YYYY/MM/DD。
+# 源库默认 prodb_dm，分区字段默认 tx_dt。
+
+target_database target_table 2025-01-01 2025-01-03
+fdm.example_view|target_database|target_table|20250101|2025/1/3

@@ -1,0 +1,11 @@
+# 每个非空、非注释行格式，支持空格、制表符或 | 分隔：
+# 库名 表名 开始日期 结束日期
+# 或：视图名 库名 表名 开始日期 结束日期
+#
+# 分区表日期范围包含开始日期和结束日期。
+# 非分区表仍需填写合法日期，但日期范围不会用于上传。
+# 日期支持 YYYYMMDD、YYYY-M-D、YYYY-MM-DD、YYYY/M/D、YYYY/MM/DD。
+
+your_database partitioned_table 2025-01-01 2025-01-03
+your_database|non_partitioned_table|20250101|20250101
+fdm.example_view|your_database|partitioned_table|2025/1/1|2025-1-3
