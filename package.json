@@ -1,0 +1,23 @@
+{
+  "name": "data-recovery-console",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=14.18.0"
+  },
+  "scripts": {
+    "dev": "node scripts/dev.mjs",
+    "dev:server": "node server/server.js",
+    "dev:client": "vite --host 127.0.0.1",
+    "start": "node server/server.js",
+    "build": "vite build",
+    "preview": "vite preview --host 127.0.0.1"
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "@vitejs/plugin-vue": "4.6.2",
+    "vite": "4.5.14",
+    "vue": "^3.5.16"
+  }
+}
