@@ -11,8 +11,8 @@
 #   视图名 库名 表名 开始日期 结束日期
 #
 # 输出格式:
-#   有视图名: 视图名|表名|日期|数据量
-#   无视图名: 表名|日期|数据量
+#   有视图名: 视图名|库名|表名|日期|数据量
+#   无视图名: 库名|表名|日期|数据量
 #
 # 分区表按 PARTITION_COLUMN 指定的日期分区字段统计，默认 tx_dt。
 # 非分区表忽略输入日期范围，只输出当前整表数据量，日期列输出 ALL。
@@ -151,14 +151,15 @@ query_scalar() {
 
 emit_count_result() {
     local view_name=$1
-    local table_name=$2
-    local stat_date=$3
-    local row_count=$4
+    local database_name=$2
+    local table_name=$3
+    local stat_date=$4
+    local row_count=$5
 
     if [[ -n "$view_name" ]]; then
-        printf '%s|%s|%s|%s\n' "$view_name" "$table_name" "$stat_date" "$row_count" >> "$TEMP_OUTPUT"
+        printf '%s|%s|%s|%s|%s\n' "$view_name" "$database_name" "$table_name" "$stat_date" "$row_count" >> "$TEMP_OUTPUT"
     else
-        printf '%s|%s|%s\n' "$table_name" "$stat_date" "$row_count" >> "$TEMP_OUTPUT"
+        printf '%s|%s|%s|%s\n' "$database_name" "$table_name" "$stat_date" "$row_count" >> "$TEMP_OUTPUT"
     fi
 }
 
@@ -197,7 +198,7 @@ process_partitioned_table() {
     current_date=$start_date
     while :; do
         row_count=${PARTITION_COUNTS[$current_date]:-0}
-        emit_count_result "$view_name" "$table_name" "$current_date" "$row_count"
+        emit_count_result "$view_name" "$database_name" "$table_name" "$current_date" "$row_count"
 
         [[ "$current_date" == "$end_date" ]] && break
         current_date=$(date -d "${current_date} + 1 day" '+%F')
@@ -215,7 +216,7 @@ process_non_partitioned_table() {
     [[ "$row_count" =~ ^[0-9]+$ ]] ||
         die "非分区表 ${database_name}.${table_name} 查询返回的数据量不是数字：${row_count:-空}"
 
-    emit_count_result "$view_name" "$table_name" "ALL" "$row_count"
+    emit_count_result "$view_name" "$database_name" "$table_name" "ALL" "$row_count"
 }
 
 process_task() {

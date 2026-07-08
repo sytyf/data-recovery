@@ -133,21 +133,30 @@ cp config/recovery.local.example.json config/recovery.local.json
 
 ```json
 {
-  "sourceRoot": "/data/recovery/source",
-  "stageRoot": "/data/recovery/stage"
+  "maskedSourceRoot": "/data/recovery/source/masked",
+  "unmaskedSourceRoot": "/data/recovery/source/unmasked",
+  "nonPartitionSourceRoot": "/data/recovery/source/non-partition",
+  "stageRoot": "/data/recovery/stage",
+  "packageRoot": "/data/recovery/package"
 }
 ```
 
 含义：
 
-- `sourceRoot`：本地恢复源根目录，连续时间段恢复和单日期恢复使用。
+- `maskedSourceRoot`：脱敏数据恢复源根目录，连续时间段恢复和单日期恢复使用。
+- `unmaskedSourceRoot`：未脱敏数据恢复源根目录，连续时间段恢复和单日期恢复使用。
+- `nonPartitionSourceRoot`：非分区表恢复源根目录，单日期恢复遇到非分区表时使用。
 - `stageRoot`：连续时间段恢复使用的本地中转目录。
+- `packageRoot`：数据文件打包使用的本地拷贝目录，后端执行 `hdfs dfs -get` 时写入该目录。
 
 也可以用环境变量覆盖：
 
 ```bash
-export RECOVERY_SOURCE_ROOT=/data/recovery/source
+export RECOVERY_MASKED_SOURCE_ROOT=/data/recovery/source/masked
+export RECOVERY_UNMASKED_SOURCE_ROOT=/data/recovery/source/unmasked
+export RECOVERY_NON_PARTITION_SOURCE_ROOT=/data/recovery/source/non-partition
 export RECOVERY_STAGE_ROOT=/data/recovery/stage
+export DATA_PACKAGE_ROOT=/data/recovery/package
 ```
 
 ## 7. 环境变量配置
@@ -164,8 +173,11 @@ cp config/env.example .env
 HOST=0.0.0.0
 PORT=3001
 RECOVERY_EXECUTE=1
-RECOVERY_SOURCE_ROOT=/data/recovery/source
+RECOVERY_MASKED_SOURCE_ROOT=/data/recovery/source/masked
+RECOVERY_UNMASKED_SOURCE_ROOT=/data/recovery/source/unmasked
+RECOVERY_NON_PARTITION_SOURCE_ROOT=/data/recovery/source/non-partition
 RECOVERY_STAGE_ROOT=/data/recovery/stage
+DATA_PACKAGE_ROOT=/data/recovery/package
 
 INCP_IP=<HiveServer2地址>
 INCP_USER=<Hive用户>
@@ -175,9 +187,22 @@ KRB_PRINCIPAL=ekg@TDH
 
 PARTITION_COLUMN=tx_dt
 SOURCE_DATABASE=prodb_dm
+TABLE_LOCATION_COLUMN=table_location
 ```
 
-`RECOVERY_EXECUTE=1` 才会真实执行恢复脚本。未设置时是 dry-run，适合页面联调。
+`RECOVERY_EXECUTE=1` 才会真实执行恢复脚本。未设置时是 dry-run，适合页面联调。页面开始恢复前会选择“脱敏数据恢复”或“未脱敏数据恢复”，后端分别映射到 `RECOVERY_MASKED_SOURCE_ROOT` 和 `RECOVERY_UNMASKED_SOURCE_ROOT`。
+
+首页“恢复模版下载”按钮会下载 `/api/templates/recovery.xlsx`，模板包含视图恢复、源表恢复和数据文件打包所需表头。
+
+跨库数据恢复目标库优先级：
+
+```text
+清单每行库名 > 页面跨库目标库输入框
+```
+
+也就是说，Excel/CSV 某行有库名时，该库名就是该行的恢复目标库；某行库名为空时，才使用页面输入的跨库目标库作为统一兜底。跨库源库默认是 `SOURCE_DATABASE=prodb_dm`，可在 `.env` 中修改。
+
+数据文件打包会读取清单中的库名、表名、开始日期和结束日期。真实执行时，后端通过 Hive 元数据查询表 HDFS 路径，并调用 `hdfs dfs -get` 拷贝到 `DATA_PACKAGE_ROOT`/`packageRoot`。如果内网元数据视图中的表路径字段不是 `table_location`，请调整 `TABLE_LOCATION_COLUMN`。
 
 ## 8. 启动服务
 
@@ -312,8 +337,9 @@ scripts/view_to_source_tables.sh
 scripts/copy_hive_partitions.sh
 scripts/file_to_prodb_optimized.sh
 scripts/prodb_dm_to_target_partitions.sh
-scripts/count_table_rows.sh
 ```
+
+数据量回查不再调用 shell 脚本，由 Node 后端通过 `beeline` 批量执行 SQL 查询并返回表、日期分区和数据量。
 
 ## 12. 部署前检查
 
@@ -340,7 +366,7 @@ test -f dist/index.html
 
 - 读取 `config/recovery.local.json`、脚本和 keytab。
 - 写入 `uploads/` 和 `generated/`。
-- 读取 `sourceRoot` 下的恢复源文件。
+- 读取 `maskedSourceRoot`、`unmaskedSourceRoot` 和 `nonPartitionSourceRoot` 下的恢复源文件。
 - 写入 `stageRoot` 中转目录。
 - 执行 `beeline`、`hdfs`、`kinit` 并访问 Hive/HDFS。
 

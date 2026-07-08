@@ -52,8 +52,11 @@
 HOST=0.0.0.0
 PORT=3001
 RECOVERY_EXECUTE=1
-RECOVERY_SOURCE_ROOT=/data/recovery/source
+RECOVERY_MASKED_SOURCE_ROOT=/data/recovery/source/masked
+RECOVERY_UNMASKED_SOURCE_ROOT=/data/recovery/source/unmasked
+RECOVERY_NON_PARTITION_SOURCE_ROOT=/data/recovery/source/non-partition
 RECOVERY_STAGE_ROOT=/data/recovery/stage
+DATA_PACKAGE_ROOT=/data/recovery/package
 INCP_IP=<HiveServer2地址>
 INCP_USER=<Hive用户>
 INCP_PASSWD=<Hive密码，可为空>
@@ -61,6 +64,7 @@ KRB_KEYTAB=/home/tyf/etc/ekg.keytab
 KRB_PRINCIPAL=ekg@TDH
 PARTITION_COLUMN=tx_dt
 SOURCE_DATABASE=prodb_dm
+TABLE_LOCATION_COLUMN=table_location
 ```
 
 ## 本地配置文件
@@ -69,7 +73,10 @@ SOURCE_DATABASE=prodb_dm
 
 ```json
 {
-  "sourceRoot": "/data/recovery/source",
-  "stageRoot": "/data/recovery/stage"
+  "maskedSourceRoot": "/data/recovery/source/masked",
+  "unmaskedSourceRoot": "/data/recovery/source/unmasked",
+  "nonPartitionSourceRoot": "/data/recovery/source/non-partition",
+  "stageRoot": "/data/recovery/stage",
+  "packageRoot": "/data/recovery/package"
 }
 ```

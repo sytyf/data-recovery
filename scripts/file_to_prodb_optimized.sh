@@ -3,7 +3,7 @@
 # 将本地文件批量导入 Hive 表对应的 HDFS 路径。
 #
 # 用法:
-#   ./file_to_prodb_optimized.sh /本地源根目录 [配置文件]
+#   ./file_to_prodb_optimized.sh /分区表源根目录 [配置文件] [非分区表源根目录]
 #
 # 配置文件默认位置:
 #   脚本目录/../etc/file_to_prodb.txt
@@ -17,7 +17,7 @@
 #   源根目录/YYYY-MM-DD/表名/tx_dt=YYYY-MM-DD/
 #
 # 非分区表本地目录格式:
-#   源根目录/表名/
+#   非分区表源根目录/表名/
 
 set -Eeuo pipefail
 IFS=$'\n\t'
@@ -28,6 +28,7 @@ BASE_DIR=$(cd -P -- "${SCRIPT_DIR}/.." && pwd)
 
 SOURCE_BASE="${1:-}"
 CONFIG_FILE="${2:-${BASE_DIR}/etc/file_to_prodb.txt}"
+NON_PARTITION_SOURCE_BASE="${3:-${NON_PARTITION_SOURCE_BASE:-$SOURCE_BASE}}"
 LOG_BASE_DIR="${LOG_BASE_DIR:-${BASE_DIR}/logs}"
 RUN_DATE=$(date '+%Y%m%d')
 LOG_DIR="${LOG_BASE_DIR}/${RUN_DATE}"
@@ -224,7 +225,7 @@ process_non_partitioned_table() {
     local database_name=$1
     local table_name=$2
     local table_path=$3
-    local source_table="${SOURCE_BASE}/${table_name}"
+    local source_table="${NON_PARTITION_SOURCE_BASE}/${table_name}"
     local -a source_files=()
     local file
 
@@ -311,9 +312,10 @@ main() {
     local field1 field2 field3 field4 field5 extra
     local database_name table_name start_date end_date
 
-    [[ $# -ge 1 && $# -le 2 ]] ||
-        die "用法：$0 /本地源根目录 [配置文件]"
+    [[ $# -ge 1 && $# -le 3 ]] ||
+        die "用法：$0 /分区表源根目录 [配置文件] [非分区表源根目录]"
     [[ -d "$SOURCE_BASE" ]] || die "本地源根目录不存在：${SOURCE_BASE}"
+    [[ -d "$NON_PARTITION_SOURCE_BASE" ]] || die "非分区表源根目录不存在：${NON_PARTITION_SOURCE_BASE}"
     [[ -f "$CONFIG_FILE" && -r "$CONFIG_FILE" ]] ||
         die "配置文件不存在或不可读：${CONFIG_FILE}"
     [[ -n "$INCP_IP" ]] || die "请通过环境变量 INCP_IP 设置 HiveServer2 地址"
@@ -321,6 +323,7 @@ main() {
 
     mkdir -p "$LOG_DIR"
     SOURCE_BASE=$(cd -P -- "$SOURCE_BASE" && pwd)
+    NON_PARTITION_SOURCE_BASE=$(cd -P -- "$NON_PARTITION_SOURCE_BASE" && pwd)
 
     for command_name in date find kinit beeline hdfs awk tee; do
         require_command "$command_name"

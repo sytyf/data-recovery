@@ -3,6 +3,7 @@ import fs from 'fs';
 import path from 'path';
 import { spawn, spawnSync } from 'child_process';
 import { fileURLToPath } from 'url';
+import zlib from 'zlib';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const rootDir = path.resolve(__dirname, '..');
@@ -73,8 +74,22 @@ function readLocalRecoveryConfig() {
 function getLocalPathConfig() {
   const localConfig = readLocalRecoveryConfig();
   return {
-    sourceRoot: process.env.RECOVERY_SOURCE_ROOT || localConfig.sourceRoot || '',
-    stageRoot: process.env.RECOVERY_STAGE_ROOT || localConfig.stageRoot || ''
+    maskedSourceRoot: process.env.RECOVERY_MASKED_SOURCE_ROOT || process.env.RECOVERY_SOURCE_ROOT || localConfig.maskedSourceRoot || localConfig.sourceRoot || '',
+    unmaskedSourceRoot: process.env.RECOVERY_UNMASKED_SOURCE_ROOT || localConfig.unmaskedSourceRoot || localConfig.rawSourceRoot || '',
+    nonPartitionSourceRoot: process.env.RECOVERY_NON_PARTITION_SOURCE_ROOT || localConfig.nonPartitionSourceRoot || '',
+    stageRoot: process.env.RECOVERY_STAGE_ROOT || localConfig.stageRoot || '',
+    packageRoot: process.env.DATA_PACKAGE_ROOT || process.env.RECOVERY_PACKAGE_ROOT || localConfig.packageRoot || localConfig.dataPackageRoot || ''
+  };
+}
+
+function resolveSourceRoot(sourceType) {
+  const localPathConfig = getLocalPathConfig();
+  const normalized = sourceType === 'unmasked' ? 'unmasked' : 'masked';
+  return {
+    sourceType: normalized,
+    sourceRoot: normalized === 'unmasked' ? localPathConfig.unmaskedSourceRoot : localPathConfig.maskedSourceRoot,
+    nonPartitionSourceRoot: localPathConfig.nonPartitionSourceRoot,
+    stageRoot: localPathConfig.stageRoot
   };
 }
 
@@ -85,6 +100,179 @@ function sendJson(res, code, payload) {
     'Content-Length': Buffer.byteLength(body)
   });
   res.end(body);
+}
+
+function sendBuffer(res, code, buffer, headers = {}) {
+  res.writeHead(code, {
+    'Content-Length': buffer.length,
+    ...headers
+  });
+  res.end(buffer);
+}
+
+const crcTable = (() => {
+  const table = new Uint32Array(256);
+  for (let i = 0; i < 256; i += 1) {
+    let value = i;
+    for (let bit = 0; bit < 8; bit += 1) value = value & 1 ? 0xedb88320 ^ (value >>> 1) : value >>> 1;
+    table[i] = value >>> 0;
+  }
+  return table;
+})();
+
+function crc32(buffer) {
+  let crc = 0xffffffff;
+  for (const byte of buffer) crc = crcTable[(crc ^ byte) & 0xff] ^ (crc >>> 8);
+  return (crc ^ 0xffffffff) >>> 0;
+}
+
+function dosDateTime(date = new Date()) {
+  const year = Math.max(1980, date.getFullYear());
+  const dosTime = (date.getHours() << 11) | (date.getMinutes() << 5) | Math.floor(date.getSeconds() / 2);
+  const dosDate = ((year - 1980) << 9) | ((date.getMonth() + 1) << 5) | date.getDate();
+  return { dosTime, dosDate };
+}
+
+function makeZip(entries) {
+  const localParts = [];
+  const centralParts = [];
+  let offset = 0;
+  const { dosTime, dosDate } = dosDateTime();
+
+  for (const entry of entries) {
+    const name = Buffer.from(entry.name, 'utf8');
+    const source = Buffer.isBuffer(entry.content) ? entry.content : Buffer.from(entry.content, 'utf8');
+    const content = zlib.deflateRawSync(source);
+    const crc = crc32(source);
+
+    const localHeader = Buffer.alloc(30);
+    localHeader.writeUInt32LE(0x04034b50, 0);
+    localHeader.writeUInt16LE(20, 4);
+    localHeader.writeUInt16LE(0x0800, 6);
+    localHeader.writeUInt16LE(8, 8);
+    localHeader.writeUInt16LE(dosTime, 10);
+    localHeader.writeUInt16LE(dosDate, 12);
+    localHeader.writeUInt32LE(crc, 14);
+    localHeader.writeUInt32LE(content.length, 18);
+    localHeader.writeUInt32LE(source.length, 22);
+    localHeader.writeUInt16LE(name.length, 26);
+    localHeader.writeUInt16LE(0, 28);
+    localParts.push(localHeader, name, content);
+
+    const centralHeader = Buffer.alloc(46);
+    centralHeader.writeUInt32LE(0x02014b50, 0);
+    centralHeader.writeUInt16LE(20, 4);
+    centralHeader.writeUInt16LE(20, 6);
+    centralHeader.writeUInt16LE(0x0800, 8);
+    centralHeader.writeUInt16LE(8, 10);
+    centralHeader.writeUInt16LE(dosTime, 12);
+    centralHeader.writeUInt16LE(dosDate, 14);
+    centralHeader.writeUInt32LE(crc, 16);
+    centralHeader.writeUInt32LE(content.length, 20);
+    centralHeader.writeUInt32LE(source.length, 24);
+    centralHeader.writeUInt16LE(name.length, 28);
+    centralHeader.writeUInt16LE(0, 30);
+    centralHeader.writeUInt16LE(0, 32);
+    centralHeader.writeUInt16LE(0, 34);
+    centralHeader.writeUInt16LE(0, 36);
+    centralHeader.writeUInt32LE(0, 38);
+    centralHeader.writeUInt32LE(offset, 42);
+    centralParts.push(centralHeader, name);
+
+    offset += localHeader.length + name.length + content.length;
+  }
+
+  const centralDirectory = Buffer.concat(centralParts);
+  const end = Buffer.alloc(22);
+  end.writeUInt32LE(0x06054b50, 0);
+  end.writeUInt16LE(0, 4);
+  end.writeUInt16LE(0, 6);
+  end.writeUInt16LE(entries.length, 8);
+  end.writeUInt16LE(entries.length, 10);
+  end.writeUInt32LE(centralDirectory.length, 12);
+  end.writeUInt32LE(offset, 16);
+  end.writeUInt16LE(0, 20);
+
+  return Buffer.concat([...localParts, centralDirectory, end]);
+}
+
+function xmlEscape(value) {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+function cellRef(columnIndexValue, rowIndex) {
+  let value = columnIndexValue + 1;
+  let letters = '';
+  while (value > 0) {
+    const remainder = (value - 1) % 26;
+    letters = String.fromCharCode(65 + remainder) + letters;
+    value = Math.floor((value - 1) / 26);
+  }
+  return `${letters}${rowIndex}`;
+}
+
+function makeSheetXml(rows) {
+  const rowXml = rows.map((row, rowIndex) => {
+    const cells = row.map((cell, columnIndexValue) => {
+      const ref = cellRef(columnIndexValue, rowIndex + 1);
+      return `<c r="${ref}" t="inlineStr"><is><t>${xmlEscape(cell)}</t></is></c>`;
+    }).join('');
+    return `<row r="${rowIndex + 1}">${cells}</row>`;
+  }).join('');
+  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <sheetData>${rowXml}</sheetData>
+</worksheet>`;
+}
+
+function makeRecoveryTemplateXlsx() {
+  const rows = [
+    ['视图名', '库名', '源表名', '数据恢复开始日期', '数据恢复结束日期'],
+    ['', '', '', '', '']
+  ];
+  return makeZip([
+    {
+      name: '[Content_Types].xml',
+      content: `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>
+  <Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>
+</Types>`
+    },
+    {
+      name: '_rels/.rels',
+      content: `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>
+</Relationships>`
+    },
+    {
+      name: 'xl/workbook.xml',
+      content: `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <sheets>
+    <sheet name="恢复清单模板" sheetId="1" r:id="rId1"/>
+  </sheets>
+</workbook>`
+    },
+    {
+      name: 'xl/_rels/workbook.xml.rels',
+      content: `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>
+</Relationships>`
+    },
+    {
+      name: 'xl/worksheets/sheet1.xml',
+      content: makeSheetXml(rows)
+    }
+  ]);
 }
 
 function sendFile(res, filePath) {
@@ -531,13 +719,13 @@ function buildRows(fields, file) {
   }
 
   const rows = items.map((item, index) => makeRow({
-    id: `source-${index + 1}`,
+    id: `${fields.mode === 'package' ? 'package' : 'source'}-${index + 1}`,
     databaseName: item.databaseName,
     tableName: item.tableName,
     startDate: normalizeDate(item.startDate, start),
     endDate: normalizeDate(item.endDate, end)
-  })).filter((row) => row.databaseName && row.tableName);
-  return { rows, configPath: writeTaskConfig(rows, 'source') };
+  })).filter((row) => row.tableName);
+  return { rows, configPath: writeTaskConfig(rows, fields.mode === 'package' ? 'package' : 'source') };
 }
 
 function makeRow(row) {
@@ -551,7 +739,9 @@ function makeRow(row) {
 }
 
 function rowToConfigLine(row, options = {}) {
-  const databaseName = options.targetDatabase || row.databaseName;
+  const databaseName = options.preferRowDatabase
+    ? (row.databaseName || options.targetDatabase || '')
+    : (options.targetDatabase || row.databaseName || '');
   const fields = row.viewName
     ? [row.viewName, databaseName, row.tableName, row.startDate, row.endDate]
     : [databaseName, row.tableName, row.startDate, row.endDate];
@@ -624,14 +814,16 @@ function updateRowsFromScriptLine(job, line) {
 
 function getRestoreArgs(restoreMode, configPath, options) {
   const scriptPath = path.join(scriptDir, scriptMap[restoreMode]);
+  const sourceLabel = options.sourceType === 'unmasked' ? '未脱敏数据恢复源路径' : '脱敏数据恢复源路径';
   if (restoreMode === 'continuous') {
-    if (!options.sourceRoot) throw new Error('连续时间段恢复缺少本地源目录配置，请设置 .env 中的 RECOVERY_SOURCE_ROOT 或 config/recovery.local.json 的 sourceRoot');
+    if (!options.sourceRoot) throw new Error(`连续时间段恢复缺少${sourceLabel}，请设置 .env 或 config/recovery.local.json 中对应的源路径`);
     if (!options.stageRoot) throw new Error('连续时间段恢复缺少中转目录配置，请设置 .env 中的 RECOVERY_STAGE_ROOT 或 config/recovery.local.json 的 stageRoot');
     return [scriptPath, options.sourceRoot, options.stageRoot, configPath];
   }
   if (restoreMode === 'single') {
-    if (!options.sourceRoot) throw new Error('单日期恢复缺少本地源目录配置，请设置 .env 中的 RECOVERY_SOURCE_ROOT 或 config/recovery.local.json 的 sourceRoot');
-    return [scriptPath, options.sourceRoot, configPath];
+    if (!options.sourceRoot) throw new Error(`单日期恢复缺少${sourceLabel}，请设置 .env 或 config/recovery.local.json 中对应的源路径`);
+    if (!options.nonPartitionSourceRoot) throw new Error('单日期恢复缺少非分区表恢复源路径，请设置 .env 中的 RECOVERY_NON_PARTITION_SOURCE_ROOT 或 config/recovery.local.json 的 nonPartitionSourceRoot');
+    return [scriptPath, options.sourceRoot, configPath, options.nonPartitionSourceRoot];
   }
   if (restoreMode === 'cross') return [scriptPath, configPath];
   throw new Error(`未知恢复方式：${restoreMode}`);
@@ -655,24 +847,37 @@ function fallbackCount(row) {
   return [...seed].reduce((sum, char) => sum + char.charCodeAt(0), 0) * 17;
 }
 
-function parseCountOutput(outputPath, rows) {
-  const byKey = new Map(rows.map((row) => [`${row.viewName || ''}|${row.tableName}`, { ...row, count: 0, dates: [] }]));
-  const lines = fs.existsSync(outputPath) ? fs.readFileSync(outputPath, 'utf8').split(/\r?\n/) : [];
-  for (const line of lines) {
-    if (!line.trim()) continue;
-    const parts = line.split('|');
-    const hasView = parts.length === 4;
-    const viewName = hasView ? parts[0] : '';
-    const tableName = hasView ? parts[1] : parts[0];
-    const statDate = hasView ? parts[2] : parts[1];
-    const count = Number(hasView ? parts[3] : parts[2]);
-    const key = `${viewName}|${tableName}`;
-    const item = byKey.get(key) || { id: key, viewName, databaseName: '', tableName, count: 0, dates: [] };
-    item.count += Number.isFinite(count) ? count : 0;
-    item.dates.push(statDate);
-    byKey.set(key, item);
+function fallbackCountForDate(row, statDate) {
+  const seed = `${row.databaseName}.${row.tableName}.${statDate}`;
+  return [...seed].reduce((sum, char) => sum + char.charCodeAt(0), 0) * 7;
+}
+
+function addDays(dateText, days) {
+  const date = new Date(`${dateText}T00:00:00Z`);
+  date.setUTCDate(date.getUTCDate() + days);
+  return date.toISOString().slice(0, 10);
+}
+
+function enumerateDates(startDate, endDate) {
+  const dates = [];
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(startDate || '') || !/^\d{4}-\d{2}-\d{2}$/.test(endDate || '')) return dates;
+  let current = startDate;
+  for (let guard = 0; guard < 3700 && current <= endDate; guard += 1) {
+    dates.push(current);
+    current = addDays(current, 1);
   }
-  return [...byKey.values()];
+  return dates;
+}
+
+function makeSummaryItem(row, statDate, count, index) {
+  return {
+    id: `${row.id || `${row.databaseName}.${row.tableName}`}-${statDate}-${index}`,
+    viewName: row.viewName || '',
+    databaseName: row.databaseName || '',
+    tableName: row.tableName || '',
+    statDate,
+    count: Number.isFinite(Number(count)) ? Number(count) : 0
+  };
 }
 
 function buildTablePredicate(rows) {
@@ -704,19 +909,97 @@ function queryPartitionedTables(rows) {
   return partitioned;
 }
 
-function parseDirectCountOutput(output, rows) {
-  const byIndex = new Map(rows.map((row, index) => [String(index + 1), { ...row, count: 0, dates: [] }]));
+function getTableLocations(rows) {
+  const predicate = buildTablePredicate(rows);
+  if (!predicate) return new Map();
+  const locationColumn = process.env.TABLE_LOCATION_COLUMN || 'table_location';
+  validateIdentifier(locationColumn, '表路径字段名');
+  const sql = [
+    `SELECT concat(database_name,'.',table_name,'|',${locationColumn})`,
+    'FROM system.tables_v',
+    `WHERE ${predicate}`
+  ].join(' ');
+  const output = runBeeline(['-e', sql]);
+  const locations = new Map();
+  for (const rawLine of output.split(/\r?\n/)) {
+    const line = cleanBeelineLine(rawLine);
+    const separator = line.indexOf('|');
+    if (separator <= 0) continue;
+    const tableKey = line.slice(0, separator);
+    const tableLocation = line.slice(separator + 1);
+    if (tableKey && tableLocation) locations.set(tableKey, tableLocation);
+  }
+  return locations;
+}
+
+function ensureInsideRoot(rootPath, targetPath) {
+  const resolvedRoot = path.resolve(rootPath);
+  const resolvedTarget = path.resolve(targetPath);
+  if (resolvedTarget !== resolvedRoot && !resolvedTarget.startsWith(`${resolvedRoot}${path.sep}`)) {
+    throw new Error(`本地打包目录不合法：${resolvedTarget}`);
+  }
+}
+
+function runHdfsGet(sourcePath, localTargetPath, packageRoot) {
+  ensureInsideRoot(packageRoot, localTargetPath);
+  fs.mkdirSync(path.dirname(localTargetPath), { recursive: true });
+  if (fs.existsSync(localTargetPath)) fs.rmSync(localTargetPath, { recursive: true, force: true });
+
+  const hdfsBin = process.env.HDFS_BIN || 'hdfs';
+  const result = spawnSync(hdfsBin, ['dfs', '-get', sourcePath, localTargetPath], {
+    cwd: rootDir,
+    encoding: 'utf8',
+    env: process.env
+  });
+  if (result.status !== 0) {
+    throw new Error(`hdfs dfs -get 执行失败：${result.stderr || result.stdout || `退出码 ${result.status}`}`);
+  }
+}
+
+function buildPackageCopies(row, options) {
+  const tableKey = `${row.databaseName}.${row.tableName}`;
+  const tableLocation = options.tableLocations.get(tableKey);
+  if (!tableLocation) throw new Error(`未查询到表 HDFS 路径：${tableKey}`);
+
+  const partitionColumn = process.env.PARTITION_COLUMN || 'tx_dt';
+  validateIdentifier(partitionColumn, '分区字段名');
+  if (!options.partitionedTables.has(tableKey)) {
+    return [{
+      statDate: 'ALL',
+      sourcePath: tableLocation,
+      localTargetPath: path.join(options.packageRoot, row.databaseName, row.tableName, 'ALL')
+    }];
+  }
+
+  const dates = enumerateDates(row.startDate, row.endDate);
+  if (!dates.length) throw new Error(`日期范围不合法：${row.startDate} 至 ${row.endDate}`);
+  return dates.map((statDate) => ({
+    statDate,
+    sourcePath: `${tableLocation.replace(/\/+$/, '')}/${partitionColumn}=${statDate}`,
+    localTargetPath: path.join(options.packageRoot, row.databaseName, row.tableName, `${partitionColumn}=${statDate}`)
+  }));
+}
+
+function parseDirectCountOutput(output, rows, partitionedTables) {
+  const byIndexAndDate = new Map();
   for (const rawLine of output.split(/\r?\n/)) {
     const line = cleanBeelineLine(rawLine);
     if (!line.startsWith('__COUNT__|')) continue;
     const [, rowIndex, statDate, countText] = line.split('|');
-    const item = byIndex.get(rowIndex);
-    if (!item) continue;
     const count = Number(countText);
-    item.count += Number.isFinite(count) ? count : 0;
-    item.dates.push(statDate);
+    byIndexAndDate.set(`${rowIndex}|${statDate}`, Number.isFinite(count) ? count : 0);
   }
-  return [...byIndex.values()];
+
+  return rows.flatMap((row, index) => {
+    const rowIndex = String(index + 1);
+    const tableKey = `${row.databaseName}.${row.tableName}`;
+    if (!partitionedTables.has(tableKey)) {
+      return [makeSummaryItem(row, 'ALL', byIndexAndDate.get(`${rowIndex}|ALL`) || 0, index)];
+    }
+    return enumerateDates(row.startDate, row.endDate).map((statDate, dateIndex) => (
+      makeSummaryItem(row, statDate, byIndexAndDate.get(`${rowIndex}|${statDate}`) || 0, `${index}-${dateIndex}`)
+    ));
+  });
 }
 
 function queryCountsDirect(rows) {
@@ -748,43 +1031,44 @@ function queryCountsDirect(rows) {
   const output = runBeeline(['-f', sqlPath]);
   return {
     sqlPath,
-    summary: parseDirectCountOutput(output, rows)
+    summary: parseDirectCountOutput(output, rows, partitionedTables)
   };
 }
 
-async function queryCounts(job, configPath) {
+async function queryCounts(job) {
   if (isExecutionEnabled()) {
     try {
       const result = queryCountsDirect(job.rows);
       job.summary = result.summary;
-      job.logs.push(`数据量批量回查完成：${result.sqlPath}`);
-      return;
+      job.logs.push(`Node 后端数据量批量回查完成：${result.sqlPath}`);
+      return true;
     } catch (error) {
-      job.logs.push(`批量直连回查失败，回退到 count_table_rows.sh：${error.message}`);
+      job.summary = [];
+      job.logs.push(`Node 后端数据量回查失败：${error.message}`);
+      return false;
     }
   }
 
-  if (isExecutionEnabled() && fs.existsSync(path.join(scriptDir, 'count_table_rows.sh'))) {
-    const outputPath = path.join(generatedDir, `count-result-${job.id}.txt`);
-    try {
-      runScriptSync('count_table_rows.sh', [configPath, outputPath]);
-      job.summary = parseCountOutput(outputPath, job.rows);
-      job.logs.push(`数据量回查完成：${outputPath}`);
-      return;
-    } catch (error) {
-      job.logs.push(`数据量回查脚本失败，使用前端占位统计：${error.message}`);
-    }
-  }
-  job.summary = job.rows.map((row) => ({ ...row, count: fallbackCount(row) }));
+  job.summary = job.rows.flatMap((row, index) => {
+    const dates = enumerateDates(row.startDate, row.endDate);
+    if (!dates.length) return [makeSummaryItem(row, 'ALL', fallbackCount(row), index)];
+    return dates.map((statDate, dateIndex) => makeSummaryItem(row, statDate, fallbackCountForDate(row, statDate), `${index}-${dateIndex}`));
+  });
+  job.logs.push('dry-run 使用 Node 后端模拟分区数据量明细。');
+  return true;
 }
 
 async function runJob(job, restoreMode, options) {
   const dryRun = isDryRun(restoreMode);
   const configPath = writeTaskConfig(job.rows, restoreMode, {
-    targetDatabase: restoreMode === 'cross' ? options.targetDatabase : ''
+    targetDatabase: restoreMode === 'cross' ? options.targetDatabase : '',
+    preferRowDatabase: restoreMode === 'cross'
   });
   job.configPath = configPath;
   job.logs.push(`任务配置文件：${configPath}`);
+  if (restoreMode === 'continuous' || restoreMode === 'single') {
+    job.logs.push(`恢复源类型：${options.sourceType === 'unmasked' ? '未脱敏数据' : '脱敏数据'}`);
+  }
   job.logs.push(dryRun ? getDryRunReason(restoreMode) : '已开启真实脚本执行。');
   sendJob(job);
 
@@ -815,8 +1099,8 @@ async function runJob(job, restoreMode, options) {
       row.statusText = statusText.completed;
       }
     }
-    await queryCounts(job, configPath);
-    job.logs.push('恢复脚本执行完成，数据量已回查。');
+    const countSucceeded = await queryCounts(job);
+    job.logs.push(countSucceeded ? '恢复脚本执行完成，数据量已回查。' : '恢复脚本执行完成，数据量回查失败，请查看日志。');
   } catch (error) {
     job.status = 'failed';
     job.logs.push(`恢复脚本执行失败：${error.message}`);
@@ -833,6 +1117,87 @@ async function runJob(job, restoreMode, options) {
   sendJob(job);
 }
 
+async function runPackageJob(job, options) {
+  const dryRun = !isExecutionEnabled();
+  const configPath = writeTaskConfig(job.rows, 'package');
+  job.configPath = configPath;
+  job.logs.push(`打包任务配置文件：${configPath}`);
+  job.logs.push(`本地打包目录：${options.packageRoot}`);
+  job.logs.push(dryRun ? '未开启 RECOVERY_EXECUTE=1，进入 dry-run 打包流程。' : '已开启真实 HDFS get 打包执行。');
+  sendJob(job);
+
+  for (const row of job.rows) {
+    row.status = 'running';
+    row.statusText = statusText.running;
+    row.progress = 8;
+  }
+  sendJob(job);
+
+  try {
+    if (dryRun) {
+      for (const row of job.rows) {
+        const dates = enumerateDates(row.startDate, row.endDate);
+        job.logs.push(`模拟打包 ${row.databaseName}.${row.tableName} ${row.startDate} 至 ${row.endDate}，目标目录 ${options.packageRoot}`);
+        for (const progress of [26, 52, 78, 100]) {
+          await sleep(220);
+          row.progress = progress;
+          sendJob(job);
+        }
+        row.status = 'completed';
+        row.statusText = dates.length ? `已模拟 ${dates.length} 个日期` : statusText.completed;
+      }
+    } else {
+      const partitionedTables = queryPartitionedTables(job.rows);
+      const tableLocations = getTableLocations(job.rows);
+      job.logs.push('已查询表分区信息和 HDFS 表路径。');
+      sendJob(job);
+
+      for (const row of job.rows) {
+        row.status = 'running';
+        row.statusText = '查询 HDFS 路径';
+        row.progress = 12;
+        sendJob(job);
+
+        const copies = buildPackageCopies(row, {
+          packageRoot: options.packageRoot,
+          partitionedTables,
+          tableLocations
+        });
+        row.statusText = `打包 ${copies.length} 个路径`;
+
+        for (let index = 0; index < copies.length; index += 1) {
+          const copy = copies[index];
+          job.logs.push(`hdfs dfs -get ${copy.sourcePath} ${copy.localTargetPath}`);
+          runHdfsGet(copy.sourcePath, copy.localTargetPath, options.packageRoot);
+          row.progress = Math.min(96, Math.round(20 + ((index + 1) / copies.length) * 76));
+          row.statusText = copy.statDate === 'ALL' ? '非分区表打包中' : `打包 ${copy.statDate}`;
+          sendJob(job);
+        }
+
+        row.progress = 100;
+        row.status = 'completed';
+        row.statusText = statusText.completed;
+        sendJob(job);
+      }
+    }
+
+    job.logs.push('数据文件打包完成。');
+  } catch (error) {
+    job.status = 'failed';
+    job.logs.push(`数据文件打包失败：${error.message}`);
+    for (const row of job.rows) {
+      if (row.status !== 'completed') {
+        row.status = 'failed';
+        row.statusText = statusText.failed;
+      }
+    }
+  }
+
+  job.status = job.rows.some((row) => row.status === 'failed') ? 'failed' : 'completed';
+  job.logs.push(job.status === 'completed' ? '全部打包任务完成。' : '打包任务结束，存在失败行。');
+  sendJob(job);
+}
+
 async function handleParse(req, res) {
   try {
     const body = await readBody(req);
@@ -846,8 +1211,12 @@ async function handleParse(req, res) {
         ...getExecutionMeta()
       },
       logs: [
-        `已读取 ${rows.length} 个恢复对象。`,
-        fields.mode === 'view' ? '已根据视图名解析源表并生成恢复配置。' : '已生成恢复配置。'
+        `已读取 ${rows.length} 个${fields.mode === 'package' ? '打包对象' : '恢复对象'}。`,
+        fields.mode === 'view'
+          ? '已根据视图名解析源表并生成恢复配置。'
+          : fields.mode === 'package'
+            ? '已生成数据文件打包配置。'
+            : '已生成恢复配置。'
       ]
     });
   } catch (error) {
@@ -859,8 +1228,13 @@ async function handleRestore(req, res) {
   try {
     const payload = JSON.parse((await readBody(req)).toString('utf8') || '{}');
     if (!Array.isArray(payload.rows) || !payload.rows.length) throw new Error('没有可恢复的行');
-    if (payload.restoreMode === 'cross' && !payload.targetDatabase) {
-      throw new Error('跨库数据恢复需要填写目标库');
+    if (payload.restoreMode === 'cross') {
+      const missingTargetDatabaseRows = payload.rows.filter((row) => !row.databaseName);
+      if (missingTargetDatabaseRows.length && !payload.targetDatabase) {
+        throw new Error('跨库数据恢复中存在未填写库名的行，请在清单库名列补充目标库，或填写页面跨库目标库作为统一兜底');
+      }
+    } else if (payload.rows.some((row) => !row.databaseName)) {
+      throw new Error('连续时间段恢复和单日期恢复要求清单中每行必须包含库名');
     }
 
     const jobId = `job-${Date.now()}`;
@@ -874,15 +1248,61 @@ async function handleRestore(req, res) {
     };
     jobs.set(jobId, job);
     sendJson(res, 200, { jobId });
-    const localPathConfig = getLocalPathConfig();
+    const sourcePathConfig = resolveSourceRoot(payload.sourceType);
     runJob(job, payload.restoreMode, {
       targetDatabase: payload.targetDatabase,
-      sourceRoot: localPathConfig.sourceRoot,
-      stageRoot: localPathConfig.stageRoot
+      sourceRoot: sourcePathConfig.sourceRoot,
+      sourceType: sourcePathConfig.sourceType,
+      nonPartitionSourceRoot: sourcePathConfig.nonPartitionSourceRoot,
+      stageRoot: sourcePathConfig.stageRoot
     });
   } catch (error) {
     sendJson(res, 400, { error: error.message });
   }
+}
+
+async function handlePackage(req, res) {
+  try {
+    const payload = JSON.parse((await readBody(req)).toString('utf8') || '{}');
+    if (!Array.isArray(payload.rows) || !payload.rows.length) throw new Error('没有可打包的行');
+    if (payload.rows.some((row) => !row.databaseName || !row.tableName)) {
+      throw new Error('数据文件打包要求每行必须包含库名和表名');
+    }
+    if (payload.rows.some((row) => !row.startDate || !row.endDate)) {
+      throw new Error('数据文件打包要求每行必须包含开始日期和结束日期');
+    }
+
+    const localPathConfig = getLocalPathConfig();
+    if (!localPathConfig.packageRoot) {
+      throw new Error('数据文件打包缺少本地拷贝目录配置，请设置 DATA_PACKAGE_ROOT 或 config/recovery.local.json 的 packageRoot');
+    }
+
+    const jobId = `job-${Date.now()}`;
+    const job = {
+      id: jobId,
+      status: 'running',
+      rows: payload.rows.map((row) => makeRow({ ...row, progress: 0, status: 'pending' })),
+      logs: [],
+      summary: [],
+      subscribers: new Set()
+    };
+    jobs.set(jobId, job);
+    sendJson(res, 200, { jobId });
+    runPackageJob(job, {
+      packageRoot: localPathConfig.packageRoot
+    });
+  } catch (error) {
+    sendJson(res, 400, { error: error.message });
+  }
+}
+
+function handleTemplateDownload(req, res) {
+  const buffer = makeRecoveryTemplateXlsx();
+  sendBuffer(res, 200, buffer, {
+    'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    'Content-Disposition': "attachment; filename=\"recovery-template.xlsx\"; filename*=UTF-8''%E6%81%A2%E5%A4%8D%E6%A8%A1%E7%89%88.xlsx",
+    'Cache-Control': 'no-store'
+  });
 }
 
 function handleEvents(req, res, jobId) {
@@ -909,8 +1329,10 @@ const server = http.createServer(async (req, res) => {
   if (req.method === 'GET' && url.pathname === '/api/health') {
     return sendJson(res, 200, { ok: true });
   }
+  if ((req.method === 'GET' || req.method === 'HEAD') && url.pathname === '/api/templates/recovery.xlsx') return handleTemplateDownload(req, res);
   if (req.method === 'POST' && url.pathname === '/api/parse') return handleParse(req, res);
   if (req.method === 'POST' && url.pathname === '/api/restore') return handleRestore(req, res);
+  if (req.method === 'POST' && url.pathname === '/api/package') return handlePackage(req, res);
   if (req.method === 'GET' && /^\/api\/jobs\/[^/]+\/events$/.test(url.pathname)) {
     return handleEvents(req, res, url.pathname.split('/')[3]);
   }

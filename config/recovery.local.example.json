@@ -1,4 +1,7 @@
 {
-  "sourceRoot": "/data/recovery/source",
-  "stageRoot": "/data/recovery/stage"
+  "maskedSourceRoot": "/data/recovery/source/masked",
+  "unmaskedSourceRoot": "/data/recovery/source/unmasked",
+  "nonPartitionSourceRoot": "/data/recovery/source/non-partition",
+  "stageRoot": "/data/recovery/stage",
+  "packageRoot": "/data/recovery/package"
 }
