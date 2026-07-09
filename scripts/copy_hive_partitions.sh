@@ -146,7 +146,7 @@ copy_partition_files() {
 
     mkdir -p -- "$dest_path"
     while IFS= read -r -d '' file; do
-        cp -n -- "$file" "$dest_path/"
+        cp -f -- "$file" "$dest_path/"
         copied=1
     done < <(find "$src_path" -mindepth 1 -maxdepth 1 -type f -print0)
 
@@ -210,6 +210,7 @@ process_task() {
     [[ "$src_base" != "$dest_base" ]] || die "源根目录和目标根目录不能相同"
 
     log "开始任务：${database_name}.${target_table}，日期 ${start_date} 至 ${end_date}"
+    cleanup_stage_table_dir "$dest_base" "$target_table"
 
     current_date=$start_date
     while :; do
@@ -263,8 +264,19 @@ process_task() {
     log "确保 HDFS 表根目录存在：${tab_path%/}"
     hdfs dfs -mkdir -p "${tab_path%/}"
 
-    log "批量上传 ${#upload_paths[@]} 个分区目录 -> ${tab_path}/"
-    hdfs dfs -put -f "${upload_paths[@]}" "${tab_path%/}/"
+    log "优先批量上传 ${#upload_paths[@]} 个分区目录 -> ${tab_path}/"
+    if ! hdfs dfs -put -f "${upload_paths[@]}" "${tab_path%/}/"; then
+        log "批量上传失败，切换为逐日期分区上传"
+        local i
+        for (( i = 0; i < ${#upload_paths[@]}; i++ )); do
+            log "上传分区目录 $((i + 1))/${#upload_paths[@]}：${upload_paths[$i]}"
+            if ! hdfs dfs -put -f "${upload_paths[$i]}" "${tab_path%/}/"; then
+                log "上传分区失败，清理目标分区后重试：${hdfs_partition_paths[$i]}"
+                hdfs dfs -rm -r -f "${hdfs_partition_paths[$i]}" || true
+                hdfs dfs -put -f "${upload_paths[$i]}" "${tab_path%/}/"
+            fi
+        done
+    fi
 
     # 已存在分区的元数据保持不变；此前不存在的分区由 MSCK 补充。
     beeline_run "USE ${database_name};MSCK REPAIR TABLE ${target_table}"

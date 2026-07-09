@@ -213,8 +213,19 @@ process_partitioned_table() {
 
     # 多源 put 的目标根目录必须存在；不要提前创建分区子目录。
     hdfs dfs -mkdir -p "$table_path"
-    log "批量上传 ${#source_partitions[@]} 个分区目录"
-    hdfs dfs -put "${source_partitions[@]}" "${table_path%/}/"
+    log "优先批量上传 ${#source_partitions[@]} 个分区目录"
+    if ! hdfs dfs -put -f "${source_partitions[@]}" "${table_path%/}/"; then
+        log "批量上传失败，切换为逐日期分区上传"
+        local i
+        for (( i = 0; i < ${#source_partitions[@]}; i++ )); do
+            log "上传分区目录 $((i + 1))/${#source_partitions[@]}：${source_partitions[$i]}"
+            if ! hdfs dfs -put -f "${source_partitions[$i]}" "${table_path%/}/"; then
+                log "上传分区失败，清理目标分区后重试：${hdfs_partitions[$i]}"
+                hdfs dfs -rm -r -f "${hdfs_partitions[$i]}" || true
+                hdfs dfs -put -f "${source_partitions[$i]}" "${table_path%/}/"
+            fi
+        done
+    fi
 
     # 已有分区元数据保持不变，新分区由 MSCK 注册。
     beeline_run "USE ${database_name};MSCK REPAIR TABLE ${table_name}"
@@ -249,7 +260,11 @@ process_non_partitioned_table() {
     hdfs dfs -mkdir -p "$table_path"
 
     log "上传非分区表文件，共 ${#source_files[@]} 个"
-    hdfs dfs -put "${source_files[@]}" "${table_path%/}/"
+    if ! hdfs dfs -put -f "${source_files[@]}" "${table_path%/}/"; then
+        log "上传非分区表文件失败，清理目标目录后重试：${table_path%/}/*"
+        hdfs dfs -rm -r -f "${table_path%/}/*" || true
+        hdfs dfs -put -f "${source_files[@]}" "${table_path%/}/"
+    fi
     log "${database_name}.${table_name} 数据上传完成"
 }
 

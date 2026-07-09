@@ -79,6 +79,9 @@ const sourceType = ref('');
 const rows = ref([]);
 const logs = ref(['等待上传或读取清单...']);
 const summary = ref([]);
+const summaryFile = ref(null);
+const summaryTotal = ref(0);
+const summaryZeroTotal = ref(0);
 const parsing = ref(false);
 const running = ref(false);
 const parseMeta = ref(null);
@@ -115,6 +118,9 @@ function selectMode(mode) {
   activeMode.value = mode;
   rows.value = [];
   summary.value = [];
+  summaryFile.value = null;
+  summaryTotal.value = 0;
+  summaryZeroTotal.value = 0;
   parseMeta.value = null;
   logs.value = ['已切换清单类型，等待新的输入。'];
 }
@@ -192,6 +198,9 @@ async function parseList() {
   parsing.value = true;
   rows.value = [];
   summary.value = [];
+  summaryFile.value = null;
+  summaryTotal.value = 0;
+  summaryZeroTotal.value = 0;
   logs.value = ['开始读取清单...'];
   parseMeta.value = null;
 
@@ -225,6 +234,9 @@ async function startRestore(restoreMode) {
   const actionInfo = availableActions.value.find((mode) => mode.key === restoreMode);
   logs.value = [`启动${actionInfo.title}...`];
   summary.value = [];
+  summaryFile.value = null;
+  summaryTotal.value = 0;
+  summaryZeroTotal.value = 0;
 
   const response = await fetch(restoreMode === 'package' ? '/api/package' : '/api/restore', {
     method: 'POST',
@@ -252,6 +264,9 @@ async function startRestore(restoreMode) {
     if (data.rows) rows.value = data.rows;
     if (data.logs) logs.value = data.logs;
     if (data.summary) summary.value = data.summary;
+    if (typeof data.summaryTotal === 'number') summaryTotal.value = data.summaryTotal;
+    if (typeof data.summaryZeroTotal === 'number') summaryZeroTotal.value = data.summaryZeroTotal;
+    if (data.summaryFile !== undefined) summaryFile.value = data.summaryFile;
     if (data.status === 'completed' || data.status === 'failed') {
       running.value = false;
       eventSource.close();
@@ -444,26 +459,41 @@ async function startRestore(restoreMode) {
         </section>
 
         <section>
-          <h2>数据量回查</h2>
+          <div class="section-heading">
+            <div>
+              <h2>数据量回查</h2>
+              <p v-if="summaryTotal">明细 {{ summaryTotal }} 条，0 数据分区 {{ summaryZeroTotal }} 条</p>
+              <p v-else>回查完成后生成完整 Excel 明细</p>
+            </div>
+            <a
+              v-if="summaryFile?.url"
+              class="summary-download"
+              :href="summaryFile.url"
+              download
+            >
+              明细下载
+            </a>
+          </div>
           <div v-if="summary.length" class="summary-table">
             <table>
               <thead>
                 <tr>
                   <th>表名</th>
-                  <th>日期</th>
-                  <th>数据量</th>
+                  <th>0 数据分区</th>
                 </tr>
               </thead>
               <tbody>
                 <tr v-for="item in summary" :key="item.id">
                   <td :title="`${item.databaseName}.${item.tableName}`">{{ item.tableName }}</td>
                   <td>{{ item.statDate }}</td>
-                  <td>{{ item.count.toLocaleString() }}</td>
                 </tr>
               </tbody>
             </table>
           </div>
-          <p v-else class="summary-empty">恢复完成后展示表、单个日期分区和数据量。</p>
+          <p v-else-if="summaryFile" class="summary-empty">
+            回查完成，未发现数据量为 0 的时间分区。可下载 Excel 查看完整明细。
+          </p>
+          <p v-else class="summary-empty">恢复完成后仅展示数据量为 0 的时间分区，完整明细可下载 Excel。</p>
         </section>
 
         <section>
@@ -480,9 +510,9 @@ async function startRestore(restoreMode) {
           <h2>配置文件</h2>
           <p>{{ parseMeta.configPath }}</p>
           <small v-if="parseMeta.dryRun">
-            当前为 dry-run，未调用真实恢复脚本。请确认 .env 中 RECOVERY_EXECUTE=1，并重启后端服务。
+            当前为 dry-run，未执行真实恢复。请确认 .env 中 RECOVERY_EXECUTE=1，并重启后端服务。
           </small>
-          <small v-else>已接入真实脚本执行。</small>
+          <small v-else>已接入真实后端执行，shell 脚本仅作为失败备用方案。</small>
         </section>
       </aside>
     </section>

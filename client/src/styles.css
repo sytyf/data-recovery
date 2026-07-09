@@ -622,6 +622,39 @@ td:nth-child(7) {
   padding-left: 26px;
 }
 
+.section-heading {
+  align-items: flex-start;
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+}
+
+.section-heading p {
+  color: #667385;
+  font-size: 12px;
+  line-height: 1.5;
+  margin: 6px 0 0;
+}
+
+.summary-download {
+  align-items: center;
+  background: #eef6ff;
+  border: 1px solid #bdd7ff;
+  border-radius: 7px;
+  color: #1f6feb;
+  display: inline-flex;
+  flex: 0 0 auto;
+  font-size: 12px;
+  font-weight: 760;
+  height: 32px;
+  padding: 0 11px;
+  text-decoration: none;
+}
+
+.summary-download:hover {
+  background: #e2f0ff;
+}
+
 .summary-table {
   border: 1px solid #e5ebf3;
   border-radius: 8px;
@@ -644,16 +677,8 @@ td:nth-child(7) {
 .summary-table th:nth-child(1),
 .summary-table td:nth-child(1),
 .summary-table th:nth-child(2),
-.summary-table td:nth-child(2),
-.summary-table th:nth-child(3),
-.summary-table td:nth-child(3) {
+.summary-table td:nth-child(2) {
   width: auto;
-}
-
-.summary-table td:nth-child(3) {
-  color: #16815f;
-  font-weight: 800;
-  text-align: right;
 }
 
 .task-stats {

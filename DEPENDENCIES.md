@@ -10,7 +10,7 @@
 
 ## npm 依赖
 
-生产运行时 npm 依赖为空，后端只使用 Node 内置模块。
+生产运行时 npm 依赖为空，后端只使用 Node 内置模块。恢复链路优先由 Node 后端直接调用 `beeline`、`hdfs`/`hadoop` 完成；`scripts/` 下的 shell 脚本仅在 Node 后端执行失败时作为备用方案。
 
 前端构建依赖以 `package-lock.json` 为准：
 

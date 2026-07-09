@@ -190,7 +190,9 @@ SOURCE_DATABASE=prodb_dm
 TABLE_LOCATION_COLUMN=table_location
 ```
 
-`RECOVERY_EXECUTE=1` 才会真实执行恢复脚本。未设置时是 dry-run，适合页面联调。页面开始恢复前会选择“脱敏数据恢复”或“未脱敏数据恢复”，后端分别映射到 `RECOVERY_MASKED_SOURCE_ROOT` 和 `RECOVERY_UNMASKED_SOURCE_ROOT`。
+`RECOVERY_EXECUTE=1` 才会真实执行恢复。未设置时是 dry-run，适合页面联调。页面开始恢复前会选择“脱敏数据恢复”或“未脱敏数据恢复”，后端分别映射到 `RECOVERY_MASKED_SOURCE_ROOT` 和 `RECOVERY_UNMASKED_SOURCE_ROOT`。
+
+真实执行时优先使用 Node 后端内置逻辑完成视图解析、连续恢复、单日期恢复、跨库恢复、数据文件打包和数据量回查。只有 Node 后端执行失败时，才会尝试调用 `scripts/` 下的 shell 脚本作为备用方案。
 
 首页“恢复模版下载”按钮会下载 `/api/templates/recovery.xlsx`，模板包含视图恢复、源表恢复和数据文件打包所需表头。
 
@@ -330,16 +332,17 @@ Hadoop/HDFS: 与目标 HDFS 集群客户端版本保持一致
 Kerberos client: 与内网认证环境匹配
 ```
 
-脚本会调用：
+以下 shell 脚本保留为备用方案。正常情况下先执行 Node 后端逻辑，只有 Node 执行失败后才会回退调用：
 
 ```text
 scripts/view_to_source_tables.sh
 scripts/copy_hive_partitions.sh
 scripts/file_to_prodb_optimized.sh
 scripts/prodb_dm_to_target_partitions.sh
+scripts/count_table_rows.sh
 ```
 
-数据量回查不再调用 shell 脚本，由 Node 后端通过 `beeline` 批量执行 SQL 查询并返回表、日期分区和数据量。
+数据量回查同样优先由 Node 后端通过 `beeline` 批量执行 SQL 查询并返回表、日期分区和数据量；Node 回查失败时才尝试 `scripts/count_table_rows.sh` 备用方案。
 
 ## 12. 部署前检查
 
