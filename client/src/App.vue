@@ -25,6 +25,12 @@ const modes = [
     index: '4',
     title: '数据文件打包',
     detail: '上传清单，读取库名、表名和日期范围并执行 HDFS get'
+  },
+  {
+    key: 'count',
+    index: '5',
+    title: '数据量查询',
+    detail: '上传 Excel，读取库名、表名和日期范围，生成数据量统计 Excel'
   }
 ];
 
@@ -58,6 +64,21 @@ const packageModes = [
   }
 ];
 
+const countModes = [
+  {
+    key: 'view-count',
+    title: '视图数据量查询',
+    hint: '先解析视图源表，再查询日期分区数据量',
+    icon: 'M4 5h16M4 12h16M4 19h16M8 5v14M16 5v14'
+  },
+  {
+    key: 'source-count',
+    title: '贴源表数据量查询',
+    hint: '按清单中的库名和表名直接查询数据量',
+    icon: 'M4 7h16M4 12h16M4 17h16M7 4v16M17 4v16'
+  }
+];
+
 const sourceOptions = [
   { key: 'masked', title: '脱敏数据恢复', hint: '使用脱敏数据恢复源路径' },
   { key: 'unmasked', title: '未脱敏数据恢复', hint: '使用未脱敏数据恢复源路径' }
@@ -82,20 +103,32 @@ const summary = ref([]);
 const summaryFile = ref(null);
 const summaryTotal = ref(0);
 const summaryZeroTotal = ref(0);
+const countStatus = ref('idle');
+const countProgress = ref(0);
+const countText = ref('');
 const parsing = ref(false);
 const running = ref(false);
+const paused = ref(false);
+const controlling = ref(false);
+const currentJobId = ref('');
 const parseMeta = ref(null);
 const notice = ref('');
+const confirmTerminate = ref(false);
 let eventSource = null;
 
 const activeModeInfo = computed(() => modes.find((mode) => mode.key === activeMode.value));
-const availableActions = computed(() => (activeMode.value === 'package' ? packageModes : restoreModes));
-const actionNoun = computed(() => (activeMode.value === 'package' ? '打包' : '恢复'));
+const availableActions = computed(() => {
+  if (activeMode.value === 'package') return packageModes;
+  if (activeMode.value === 'count') return countModes;
+  return restoreModes;
+});
+const actionNoun = computed(() => (activeMode.value === 'package' ? '打包' : activeMode.value === 'count' ? '查询' : '恢复'));
 const completedCount = computed(() => rows.value.filter((row) => row.status === 'completed').length);
 const failedCount = computed(() => rows.value.filter((row) => row.status === 'failed').length);
 const runningCount = computed(() => rows.value.filter((row) => row.status === 'running').length);
 const pendingCount = computed(() => rows.value.filter((row) => row.status === 'pending').length);
 const shellState = computed(() => {
+  if (running.value && paused.value) return { label: `${actionNoun.value}已暂停`, state: 'paused' };
   if (running.value) return { label: `${actionNoun.value}执行中`, state: 'running' };
   if (failedCount.value) return { label: '存在失败行', state: 'failed' };
   if (rows.value.length && completedCount.value === rows.value.length) return { label: `${actionNoun.value}完成`, state: 'completed' };
@@ -105,24 +138,47 @@ const totalProgress = computed(() => {
   if (!rows.value.length) return 0;
   return Math.round(rows.value.reduce((sum, row) => sum + Number(row.progress || 0), 0) / rows.value.length);
 });
+const visibleTotalProgress = computed(() => (activeMode.value === 'count' ? countProgress.value : totalProgress.value));
 const taskStats = computed(() => [
   { label: '总任务数', value: rows.value.length, tone: 'neutral' },
   { label: '已完成', value: completedCount.value, tone: 'success' },
   { label: '失败任务', value: failedCount.value, tone: 'danger' },
   { label: '执行中', value: runningCount.value, tone: 'info' },
   { label: '待执行', value: pendingCount.value, tone: 'muted' },
-  { label: '完成率', value: `${totalProgress.value}%`, tone: 'success' }
+  { label: '完成率', value: `${visibleTotalProgress.value}%`, tone: 'success' }
 ]);
 
 function selectMode(mode) {
+  if (running.value) {
+    showNotice(`当前${actionNoun.value}任务正在执行，请先暂停或终止后再切换流程。`);
+    return;
+  }
   activeMode.value = mode;
   rows.value = [];
   summary.value = [];
   summaryFile.value = null;
   summaryTotal.value = 0;
   summaryZeroTotal.value = 0;
+  resetSummaryState();
   parseMeta.value = null;
   logs.value = ['已切换清单类型，等待新的输入。'];
+}
+
+function resetSummaryState() {
+  summary.value = [];
+  summaryFile.value = null;
+  summaryTotal.value = 0;
+  summaryZeroTotal.value = 0;
+  countStatus.value = 'idle';
+  countProgress.value = 0;
+  countText.value = '';
+}
+
+function closeJobStream() {
+  if (eventSource) {
+    eventSource.close();
+    eventSource = null;
+  }
 }
 
 function onFileChange(event) {
@@ -137,8 +193,8 @@ function clearNotice() {
   notice.value = '';
 }
 
-function hasMissingDateRows() {
-  return rows.value.some((row) => !row.startDate || !row.endDate);
+function hasMissingDateRows(sourceRows = rows.value) {
+  return sourceRows.some((row) => !row.startDate || !row.endDate);
 }
 
 function validateBeforeParse() {
@@ -165,7 +221,8 @@ function validateBeforeRestore(restoreMode) {
     showNotice(`请先读取清单，再执行${restoreMode === 'package' ? '数据文件打包' : '数据恢复'}。`);
     return false;
   }
-  if (hasMissingDateRows()) {
+  const validRows = rows.value.filter((row) => row.status !== 'failed');
+  if (hasMissingDateRows(validRows)) {
     showNotice('存在未填写恢复开始日期或恢复结束日期的行，请在 Excel 中补充日期，或在页面日期输入框中设置默认时间段后重新读取清单。');
     return false;
   }
@@ -174,21 +231,31 @@ function validateBeforeRestore(restoreMode) {
       showNotice('请先选择恢复源类型：脱敏数据恢复或未脱敏数据恢复。');
       return false;
     }
-    if (rows.value.some((row) => !row.databaseName)) {
+    if (validRows.some((row) => !row.databaseName)) {
       showNotice('连续时间段恢复和单日期恢复要求每行都包含库名，请补充清单后重新读取。');
       return false;
     }
   }
   if (restoreMode === 'cross') {
-    const missingTarget = rows.value.some((row) => !row.databaseName);
+    const missingTarget = validRows.some((row) => !row.databaseName);
     if (missingTarget && !targetDatabase.value) {
       showNotice('跨库恢复存在清单库名为空的行，请填写跨库目标库作为统一兜底。');
       return false;
     }
   }
-  if (restoreMode === 'package' && rows.value.some((row) => !row.databaseName || !row.tableName)) {
+  if (restoreMode === 'package' && validRows.some((row) => !row.databaseName || !row.tableName)) {
     showNotice('数据文件打包要求清单中每行都包含库名和表名，请补充后重新读取。');
     return false;
+  }
+  if (activeMode.value === 'count') {
+    if (validRows.some((row) => !row.tableName)) {
+      showNotice('数据量查询要求清单中每行都包含表名。');
+      return false;
+    }
+    if (restoreMode === 'source-count' && validRows.some((row) => !row.databaseName)) {
+      showNotice('贴源表数据量查询要求清单中每行都包含库名。');
+      return false;
+    }
   }
   return true;
 }
@@ -197,10 +264,7 @@ async function parseList() {
   if (!validateBeforeParse()) return;
   parsing.value = true;
   rows.value = [];
-  summary.value = [];
-  summaryFile.value = null;
-  summaryTotal.value = 0;
-  summaryZeroTotal.value = 0;
+  resetSummaryState();
   logs.value = ['开始读取清单...'];
   parseMeta.value = null;
 
@@ -221,6 +285,10 @@ async function parseList() {
     rows.value = payload.rows;
     parseMeta.value = payload.meta;
     logs.value = payload.logs;
+    if (activeMode.value === 'count') {
+      countText.value = `已读取 ${payload.rows.length} 行查询清单，请选择查询方式。`;
+      countProgress.value = 0;
+    }
   } catch (error) {
     logs.value = [`读取失败：${error.message}`];
   } finally {
@@ -231,18 +299,28 @@ async function parseList() {
 async function startRestore(restoreMode) {
   if (!validateBeforeRestore(restoreMode)) return;
   running.value = true;
+  paused.value = false;
+  currentJobId.value = '';
   const actionInfo = availableActions.value.find((mode) => mode.key === restoreMode);
   logs.value = [`启动${actionInfo.title}...`];
-  summary.value = [];
-  summaryFile.value = null;
-  summaryTotal.value = 0;
-  summaryZeroTotal.value = 0;
+  resetSummaryState();
+  if (activeMode.value === 'count') {
+    countStatus.value = 'running';
+    countProgress.value = 1;
+    countText.value = `正在启动${actionInfo.title}...`;
+  }
 
-  const response = await fetch(restoreMode === 'package' ? '/api/package' : '/api/restore', {
+  const endpoint = activeMode.value === 'count'
+    ? '/api/count-query'
+    : restoreMode === 'package'
+      ? '/api/package'
+      : '/api/restore';
+  const response = await fetch(endpoint, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       restoreMode,
+      queryMode: activeMode.value === 'count' ? restoreMode : '',
       sourceMode: activeMode.value,
       sourceType: sourceType.value,
       targetDatabase: targetDatabase.value,
@@ -258,25 +336,85 @@ async function startRestore(restoreMode) {
   }
 
   if (eventSource) eventSource.close();
+  currentJobId.value = payload.jobId;
   eventSource = new EventSource(`/api/jobs/${payload.jobId}/events`);
   eventSource.onmessage = (event) => {
     const data = JSON.parse(event.data);
     if (data.rows) rows.value = data.rows;
     if (data.logs) logs.value = data.logs;
+    if (typeof data.paused === 'boolean') paused.value = data.paused;
     if (data.summary) summary.value = data.summary;
     if (typeof data.summaryTotal === 'number') summaryTotal.value = data.summaryTotal;
     if (typeof data.summaryZeroTotal === 'number') summaryZeroTotal.value = data.summaryZeroTotal;
     if (data.summaryFile !== undefined) summaryFile.value = data.summaryFile;
-    if (data.status === 'completed' || data.status === 'failed') {
+    if (data.countStatus) countStatus.value = data.countStatus;
+    if (typeof data.countProgress === 'number') {
+      const terminalCountStatus = ['completed', 'failed', 'canceled'].includes(data.countStatus);
+      countProgress.value = terminalCountStatus ? 100 : Math.max(countProgress.value, data.countProgress);
+    }
+    if (data.countText !== undefined) countText.value = data.countText;
+    if (data.status === 'completed' || data.status === 'failed' || data.status === 'canceled') {
       running.value = false;
+      paused.value = false;
+      currentJobId.value = '';
       eventSource.close();
+      eventSource = null;
     }
   };
   eventSource.onerror = () => {
     logs.value = [`${actionNoun.value}事件连接中断，请检查后端服务。`];
     running.value = false;
+    paused.value = false;
+    currentJobId.value = '';
     eventSource.close();
+    eventSource = null;
   };
+}
+
+async function controlCurrentJob(action) {
+  if (!currentJobId.value) {
+    showNotice('当前没有正在执行的任务。');
+    return null;
+  }
+  controlling.value = true;
+  try {
+    const response = await fetch(`/api/jobs/${currentJobId.value}/${action}`, { method: 'POST' });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload.error || '任务控制失败');
+    return payload;
+  } catch (error) {
+    showNotice(error.message);
+    return null;
+  } finally {
+    controlling.value = false;
+  }
+}
+
+async function togglePause() {
+  const payload = await controlCurrentJob(paused.value ? 'resume' : 'pause');
+  if (!payload) return;
+  paused.value = Boolean(payload.paused);
+}
+
+function requestTerminate() {
+  if (!running.value || !currentJobId.value) {
+    showNotice('当前没有正在执行的任务。');
+    return;
+  }
+  confirmTerminate.value = true;
+}
+
+async function terminateCurrentJob() {
+  const payload = await controlCurrentJob('cancel');
+  if (!payload) return;
+  confirmTerminate.value = false;
+  closeJobStream();
+  running.value = false;
+  paused.value = false;
+  currentJobId.value = '';
+  rows.value = [];
+  resetSummaryState();
+  logs.value = [`当前${actionNoun.value}任务已终止，恢复对象列表已清空。`];
 }
 </script>
 
@@ -295,7 +433,7 @@ async function startRestore(restoreMode) {
           恢复模版下载
         </a>
         <div class="system-state">
-          <span :class="['state-dot', shellState.state, running ? 'pulse' : '']"></span>
+          <span :class="['state-dot', shellState.state, running && !paused ? 'pulse' : '']"></span>
           {{ shellState.label }}
         </div>
       </div>
@@ -354,11 +492,11 @@ async function startRestore(restoreMode) {
             <svg viewBox="0 0 24 24" aria-hidden="true">
               <path d="M5 12h14M13 5l7 7-7 7" />
             </svg>
-            {{ parsing ? '读取中...' : activeMode === 'full' ? '读取全库表名' : '读取清单' }}
+            {{ parsing ? '读取中...' : activeMode === 'full' ? '读取全库表名' : activeMode === 'count' ? '读取查询清单' : '读取清单' }}
           </button>
         </div>
 
-        <div v-if="activeMode !== 'package'" class="source-selector">
+        <div v-if="activeMode !== 'package' && activeMode !== 'count'" class="source-selector">
           <div>
             <h2>恢复源类型</h2>
             <p>执行恢复前选择源路径类型，路径由后端本地配置控制。</p>
@@ -394,13 +532,53 @@ async function startRestore(restoreMode) {
           </button>
         </div>
 
-        <div class="table-panel">
+        <div v-if="running && activeMode !== 'package' && activeMode !== 'count'" class="job-controls">
+          <button class="pause-control" :disabled="controlling" @click="togglePause">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path v-if="paused" d="M8 5v14l11-7-11-7Z" />
+              <path v-else d="M8 5v14M16 5v14" />
+            </svg>
+            {{ paused ? `继续${actionNoun}` : `暂停${actionNoun}` }}
+          </button>
+          <button class="terminate-control" :disabled="controlling" @click="requestTerminate">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M6 6h12v12H6z" />
+            </svg>
+            终止{{ actionNoun }}
+          </button>
+        </div>
+
+        <div v-if="activeMode === 'count'" class="count-query-panel">
+          <div class="count-query-copy">
+            <h2>查询进度</h2>
+            <p>{{ rows.length ? `已读取 ${rows.length} 行查询清单。` : '读取查询清单后显示总体进度。' }}</p>
+          </div>
+          <div class="count-query-progress">
+            <div class="count-progress-head">
+              <span>{{ countText || (rows.length ? '等待选择查询方式。' : '等待读取查询清单。') }}</span>
+              <strong>{{ visibleTotalProgress }}%</strong>
+            </div>
+            <div class="count-progress-track">
+              <span :style="{ width: `${visibleTotalProgress}%` }"></span>
+            </div>
+          </div>
+          <a
+            v-if="summaryFile?.url"
+            class="summary-download"
+            :href="summaryFile.url"
+            download
+          >
+            下载数据量统计 Excel
+          </a>
+        </div>
+
+        <div v-else class="table-panel">
           <div class="table-header">
-            <h2>{{ activeMode === 'package' ? '打包对象' : '恢复对象' }}</h2>
+            <h2>{{ activeMode === 'package' ? '打包对象' : activeMode === 'count' ? '查询对象' : '恢复对象' }}</h2>
             <div class="metrics">
               <span>{{ rows.length }} 行</span>
               <span>{{ completedCount }} 完成</span>
-              <span>{{ totalProgress }}%</span>
+              <span>{{ visibleTotalProgress }}%</span>
             </div>
           </div>
 
@@ -408,6 +586,7 @@ async function startRestore(restoreMode) {
             <table>
               <thead>
                 <tr>
+                  <th>序号</th>
                   <th>视图名</th>
                   <th>库名</th>
                   <th>表名</th>
@@ -418,7 +597,8 @@ async function startRestore(restoreMode) {
                 </tr>
               </thead>
               <tbody>
-                <tr v-for="row in rows" :key="row.id">
+                <tr v-for="(row, index) in rows" :key="row.id">
+                  <td>{{ index + 1 }}</td>
                   <td>{{ row.viewName || '-' }}</td>
                   <td>{{ row.databaseName }}</td>
                   <td>{{ row.tableName }}</td>
@@ -442,7 +622,7 @@ async function startRestore(restoreMode) {
                   </td>
                 </tr>
                 <tr v-if="!rows.length">
-                  <td colspan="7" class="empty">上传清单或读取全库后，这里会显示待处理对象。</td>
+                  <td colspan="8" class="empty">上传清单或读取全库后，这里会显示待处理对象。</td>
                 </tr>
               </tbody>
             </table>
@@ -461,7 +641,7 @@ async function startRestore(restoreMode) {
         <section>
           <div class="section-heading">
             <div>
-              <h2>数据量回查</h2>
+              <h2>{{ activeMode === 'count' ? '数据量查询结果' : '数据量回查' }}</h2>
               <p v-if="summaryTotal">明细 {{ summaryTotal }} 条，0 数据分区 {{ summaryZeroTotal }} 条</p>
               <p v-else>回查完成后生成完整 Excel 明细</p>
             </div>
@@ -473,6 +653,15 @@ async function startRestore(restoreMode) {
             >
               明细下载
             </a>
+          </div>
+          <div v-if="countStatus !== 'idle'" :class="['count-progress-card', countStatus]">
+            <div class="count-progress-head">
+              <span>{{ countText || '数据量回查处理中...' }}</span>
+              <strong>{{ countProgress }}%</strong>
+            </div>
+            <div class="count-progress-track">
+              <span :style="{ width: `${countProgress}%` }"></span>
+            </div>
           </div>
           <div v-if="summary.length" class="summary-table">
             <table>
@@ -491,13 +680,15 @@ async function startRestore(restoreMode) {
             </table>
           </div>
           <p v-else-if="summaryFile" class="summary-empty">
-            回查完成，未发现数据量为 0 的时间分区。可下载 Excel 查看完整明细。
+            {{ activeMode === 'count' ? '查询完成，未发现数据量为 0 的时间分区。可下载 Excel 查看完整明细。' : '回查完成，未发现数据量为 0 的时间分区。可下载 Excel 查看完整明细。' }}
           </p>
-          <p v-else class="summary-empty">恢复完成后仅展示数据量为 0 的时间分区，完整明细可下载 Excel。</p>
+          <p v-else class="summary-empty">
+            {{ activeMode === 'count' ? '查询完成后可下载完整 Excel 明细，页面仅展示数据量为 0 的时间分区。' : '恢复完成后仅展示数据量为 0 的时间分区，完整明细可下载 Excel。' }}
+          </p>
         </section>
 
         <section>
-          <h2>恢复任务统计</h2>
+          <h2>{{ activeMode === 'count' ? '查询任务统计' : '恢复任务统计' }}</h2>
           <div class="task-stats">
             <article v-for="item in taskStats" :key="item.label" :class="item.tone">
               <span>{{ item.label }}</span>
@@ -522,6 +713,19 @@ async function startRestore(restoreMode) {
         <h2>操作提示</h2>
         <p>{{ notice }}</p>
         <button type="button" @click="clearNotice">知道了</button>
+      </div>
+    </div>
+
+    <div v-if="confirmTerminate" class="notice-backdrop" role="alertdialog" aria-modal="true">
+      <div class="notice-dialog confirm-dialog">
+        <h2>确认终止恢复</h2>
+        <p>确认后当前任务会停止执行，恢复对象列表会被清空。已完成的数据不会自动回滚。</p>
+        <div class="dialog-actions">
+          <button type="button" class="secondary" :disabled="controlling" @click="confirmTerminate = false">取消</button>
+          <button type="button" class="danger" :disabled="controlling" @click="terminateCurrentJob">
+            {{ controlling ? '终止中...' : '确认终止' }}
+          </button>
+        </div>
       </div>
     </div>
   </main>

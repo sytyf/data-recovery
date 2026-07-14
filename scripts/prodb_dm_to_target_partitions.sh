@@ -170,7 +170,7 @@ get_table_location() {
     local table_path
 
     table_path=$(query_scalar \
-        "SELECT table_location FROM system.tables_v WHERE database_name='${database_name}' AND table_name='${table_name}'")
+        "SELECT table_location FROM system.tables_v WHERE lower(database_name)=lower('${database_name}') AND lower(table_name)=lower('${table_name}')")
     [[ -n "$table_path" ]] || die "未查询到表路径：${database_name}.${table_name}"
     validate_hdfs_table_path "$table_path"
     printf '%s' "$table_path"
@@ -180,13 +180,23 @@ ensure_partitioned_table() {
     local database_name=$1
     local table_name=$2
     local partition_count
+    local table_ddl
 
     partition_count=$(query_scalar \
-        "SELECT count(1) FROM system.partition_keys_all_v WHERE database_name='${database_name}' AND table_name='${table_name}'")
+        "SELECT count(1) FROM system.partition_keys_all_v WHERE lower(database_name)=lower('${database_name}') AND lower(table_name)=lower('${table_name}')")
     [[ "$partition_count" =~ ^[0-9]+$ ]] ||
         die "无法判断 ${database_name}.${table_name} 是否为分区表，查询结果：${partition_count:-空}"
-    (( partition_count > 0 )) ||
-        die "${database_name}.${table_name} 不是分区表，无法按 ${PARTITION_COLUMN} 日期范围复制"
+    if (( partition_count > 0 )); then
+        return 0
+    fi
+
+    # 部分内网元数据视图不会返回分区键，使用建表语句做第二次判断。
+    if table_ddl=$(beeline_run "SHOW CREATE TABLE ${database_name}.${table_name}" 2>/dev/null) &&
+        grep -Eiq 'PARTITIONED[[:space:]]+BY' <<< "$table_ddl"; then
+        return 0
+    fi
+
+    die "${database_name}.${table_name} 不是分区表，无法按 ${PARTITION_COLUMN} 日期范围复制"
 }
 
 hdfs_test_dir() {

@@ -188,11 +188,14 @@ KRB_PRINCIPAL=ekg@TDH
 PARTITION_COLUMN=tx_dt
 SOURCE_DATABASE=prodb_dm
 TABLE_LOCATION_COLUMN=table_location
+HIVE_METADATA_BATCH_SIZE=200
+HIVE_COUNT_BATCH_SIZE=200
+HIVE_COUNT_CONCURRENCY=4
 ```
 
 `RECOVERY_EXECUTE=1` 才会真实执行恢复。未设置时是 dry-run，适合页面联调。页面开始恢复前会选择“脱敏数据恢复”或“未脱敏数据恢复”，后端分别映射到 `RECOVERY_MASKED_SOURCE_ROOT` 和 `RECOVERY_UNMASKED_SOURCE_ROOT`。
 
-真实执行时优先使用 Node 后端内置逻辑完成视图解析、连续恢复、单日期恢复、跨库恢复、数据文件打包和数据量回查。只有 Node 后端执行失败时，才会尝试调用 `scripts/` 下的 shell 脚本作为备用方案。
+真实执行时优先使用 Node 后端内置逻辑完成视图解析、连续恢复、单日期恢复、跨库恢复、数据文件打包和数据量回查。恢复执行失败时可调用 `scripts/` 下的 shell 脚本作为备用方案；数据量查询只使用 Node 后端。大量表的 Hive 元数据查询会按 `HIVE_METADATA_BATCH_SIZE` 分批写入 SQL 文件执行，数据量统计会按 `HIVE_COUNT_BATCH_SIZE` 分批执行，默认每批 200 张表，并按 `HIVE_COUNT_CONCURRENCY` 默认 4 路受控并发执行。生产环境如出现 HiveServer2 或 YARN 资源竞争，可将并发调低到 2。
 
 首页“恢复模版下载”按钮会下载 `/api/templates/recovery.xlsx`，模板包含视图恢复、源表恢复和数据文件打包所需表头。
 

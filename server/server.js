@@ -18,6 +18,7 @@ const localConfigPaths = [
 ];
 const envPath = path.join(rootDir, '.env');
 const jobs = new Map();
+let generatedSqlSequence = 0;
 
 function parseEnvValue(value) {
   const trimmed = String(value || '').trim();
@@ -57,8 +58,10 @@ const scriptMap = {
 const statusText = {
   pending: '待执行',
   running: '执行中',
+  paused: '已暂停',
   completed: '已完成',
-  failed: '失败'
+  failed: '失败',
+  canceled: '已终止'
 };
 
 function readLocalRecoveryConfig() {
@@ -280,13 +283,15 @@ function makeRecoveryTemplateXlsx() {
 
 function makeCountSummaryXlsx(summary) {
   const rows = [
-    ['视图名', '库名', '表名', '时间分区', '数据量'],
+    ['视图名', '库名', '表名', '时间分区', '数据量', '查询状态', '查询错误'],
     ...summary.map((item) => [
       item.viewName || '',
       item.databaseName || '',
       item.tableName || '',
       item.statDate || '',
-      String(item.count ?? 0)
+      item.count == null ? '' : String(item.count),
+      item.queryStatus || '查询成功',
+      item.queryError || ''
     ])
   ];
   return makeSimpleXlsx('数据量回查明细', rows);
@@ -496,7 +501,7 @@ function rowsToObjects(rows) {
 }
 
 function normalizeHeader(header = '') {
-  const value = String(header).trim().toLowerCase().replace(/\s+/g, '');
+  const value = String(header).trim().toLowerCase().replace(/[\s_-]+/g, '');
   const map = {
     '视图名': 'viewName',
     view: 'viewName',
@@ -511,10 +516,14 @@ function normalizeHeader(header = '') {
     tablename: 'tableName',
     sourcetable: 'tableName',
     '数据恢复开始日期': 'startDate',
+    '恢复开始日期': 'startDate',
+    '数据开始日期': 'startDate',
     '开始日期': 'startDate',
     startdate: 'startDate',
     start: 'startDate',
     '数据恢复结束日期': 'endDate',
+    '恢复结束日期': 'endDate',
+    '数据结束日期': 'endDate',
     '结束日期': 'endDate',
     enddate: 'endDate',
     end: 'endDate'
@@ -553,6 +562,20 @@ function normalizeDate(value, fallback) {
   return rawValue.slice(0, 10);
 }
 
+function normalizeIdentifierText(value) {
+  return String(value || '').trim().toLowerCase();
+}
+
+function normalizeTableName(value) {
+  return normalizeIdentifierText(value);
+}
+
+function getViewDatabase() {
+  const viewDatabase = normalizeIdentifierText(process.env.VIEW_DATABASE || 'fdm');
+  validateIdentifier(viewDatabase, '视图库名');
+  return viewDatabase;
+}
+
 function isExecutionEnabled() {
   return process.env.RECOVERY_EXECUTE === '1';
 }
@@ -577,6 +600,24 @@ function validateDateRange(row) {
     throw new Error(`日期范围不合法：${row.startDate || '空'} 至 ${row.endDate || '空'}`);
   }
   if (row.startDate > row.endDate) throw new Error(`开始日期晚于结束日期：${row.startDate} 至 ${row.endDate}`);
+}
+
+function markInvalidListRow(row, error) {
+  return {
+    ...row,
+    status: 'failed',
+    statusText: `清单校验失败：${error.message}`,
+    error: error.message
+  };
+}
+
+function validateListRowDate(row) {
+  try {
+    validateDateRange(row);
+    return row;
+  } catch (error) {
+    return markInvalidListRow(row, error);
+  }
 }
 
 function validateHdfsTablePath(tablePath) {
@@ -610,12 +651,16 @@ function runHdfsCommand(args, options = {}) {
   throw new Error(`未找到 HDFS 命令：${lastError?.message || 'hdfs/hadoop 不可用'}`);
 }
 
-function runCommandAsync(command, args, options = {}) {
+async function runCommandAsync(command, args, options = {}) {
+  const job = options.job;
+  await jobCheckpoint(job);
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, {
       cwd: rootDir,
+      detached: true,
       env: process.env
     });
+    registerJobChild(job, child);
     let stdout = '';
     let stderr = '';
     child.stdout.on('data', (chunk) => {
@@ -628,8 +673,16 @@ function runCommandAsync(command, args, options = {}) {
       stderr += text;
       if (options.onData) options.onData(chunk);
     });
-    child.on('error', reject);
+    child.on('error', (error) => {
+      unregisterJobChild(job, child);
+      reject(error);
+    });
     child.on('exit', (code) => {
+      unregisterJobChild(job, child);
+      if (job?.cancelRequested) {
+        reject(makeCanceledError());
+        return;
+      }
       if (code === 0 || options.allowFailure) {
         resolve({ status: code, stdout, stderr });
       } else {
@@ -677,7 +730,7 @@ function getPartitionColumn() {
 }
 
 function getSourceDatabase() {
-  const sourceDatabase = process.env.SOURCE_DATABASE || 'prodb_dm';
+  const sourceDatabase = normalizeIdentifierText(process.env.SOURCE_DATABASE || 'prodb_dm');
   validateIdentifier(sourceDatabase, '源库名');
   return sourceDatabase;
 }
@@ -692,7 +745,7 @@ function getTableLocation(databaseName, tableName) {
   const locationColumn = process.env.TABLE_LOCATION_COLUMN || 'table_location';
   validateIdentifier(locationColumn, '表路径字段名');
   const tablePath = queryScalar(
-    `SELECT ${locationColumn} FROM system.tables_v WHERE database_name='${sqlString(databaseName)}' AND table_name='${sqlString(tableName)}'`
+    `SELECT ${locationColumn} FROM system.tables_v WHERE lower(database_name)=lower('${sqlString(databaseName)}') AND lower(table_name)=lower('${sqlString(tableName)}')`
   );
   if (!tablePath) throw new Error(`未查询到表路径：${databaseName}.${tableName}`);
   validateHdfsTablePath(tablePath);
@@ -703,10 +756,19 @@ function isPartitionedTable(databaseName, tableName) {
   validateIdentifier(databaseName, '库名');
   validateIdentifier(tableName, '表名');
   const count = queryScalar(
-    `SELECT count(1) FROM system.partition_keys_all_v WHERE database_name='${sqlString(databaseName)}' AND table_name='${sqlString(tableName)}'`
+    `SELECT count(1) FROM system.partition_keys_all_v WHERE lower(database_name)=lower('${sqlString(databaseName)}') AND lower(table_name)=lower('${sqlString(tableName)}')`
   );
   if (!/^\d+$/.test(count)) throw new Error(`无法判断 ${databaseName}.${tableName} 是否为分区表，查询结果：${count || '空'}`);
-  return Number(count) > 0;
+  if (Number(count) > 0) return true;
+
+  // Some internal metadata views do not expose partition keys consistently;
+  // use the table DDL as a second source before classifying it as non-partitioned.
+  try {
+    const ddl = runBeeline(['-e', `SHOW CREATE TABLE ${databaseName}.${tableName}`]);
+    return /\bPARTITIONED\s+BY\b/i.test(ddl);
+  } catch {
+    return false;
+  }
 }
 
 function ensureLocalDirectory(dirPath, label) {
@@ -790,6 +852,17 @@ function kerberosLoginIfPossible() {
   }
 }
 
+async function kerberosLoginIfPossibleAsync(job) {
+  const keytab = process.env.KRB_KEYTAB || '/home/tyf/etc/ekg.keytab';
+  const principal = process.env.KRB_PRINCIPAL || 'ekg@TDH';
+  if (!fs.existsSync(keytab)) return;
+  try {
+    await runCommandAsync('kinit', ['-kt', keytab, principal], { job });
+  } catch (error) {
+    throw new Error(`Kerberos 认证失败：${error.message}`);
+  }
+}
+
 function runBeeline(extraArgs) {
   kerberosLoginIfPossible();
   const result = spawnSync('beeline', getBeelineArgs(extraArgs), { cwd: rootDir, encoding: 'utf8' });
@@ -798,7 +871,7 @@ function runBeeline(extraArgs) {
 }
 
 async function runBeelineAsync(extraArgs, options = {}) {
-  kerberosLoginIfPossible();
+  await kerberosLoginIfPossibleAsync(options.job);
   const result = await runCommandAsync('beeline', getBeelineArgs(extraArgs), options);
   return result.stdout;
 }
@@ -848,22 +921,26 @@ function parseTaskConfig(filePath) {
     .map((line, index) => {
       const parts = line.replace(/\|/g, ' ').split(/\s+/);
       if (parts.length === 5) {
-        return makeRow({
+        const row = makeRow({
           id: `view-${index + 1}`,
-          viewName: parts[0],
-          databaseName: parts[1],
-          tableName: parts[2],
-          startDate: parts[3],
-          endDate: parts[4]
+          viewName: normalizeIdentifierText(parts[0]),
+          databaseName: normalizeIdentifierText(parts[1]),
+          tableName: normalizeTableName(parts[2]),
+          startDate: normalizeDate(parts[3]),
+          endDate: normalizeDate(parts[4])
         });
+        validateDateRange(row);
+        return row;
       }
-      return makeRow({
+      const row = makeRow({
         id: `task-${index + 1}`,
-        databaseName: parts[0],
-        tableName: parts[1],
-        startDate: parts[2],
-        endDate: parts[3]
+        databaseName: normalizeIdentifierText(parts[0]),
+        tableName: normalizeTableName(parts[1]),
+        startDate: normalizeDate(parts[2]),
+        endDate: normalizeDate(parts[3])
       });
+      validateDateRange(row);
+      return row;
     });
 }
 
@@ -875,12 +952,11 @@ function fallbackResolveView(viewName) {
   }
   const clean = String(viewName || '').replace(/^v_/i, '').replace(/^view_/i, '');
   const parts = clean.includes('.') ? clean.split('.', 2) : ['prodb_dm', clean || 'unknown_table'];
-  return [{ databaseName: parts[0], tableName: parts[1] }];
+  return [{ databaseName: normalizeIdentifierText(parts[0]), tableName: normalizeTableName(parts[1]) }];
 }
 
 function normalizeViewName(viewName) {
-  const viewDatabase = String(process.env.VIEW_DATABASE || 'fdm').toLowerCase();
-  validateIdentifier(viewDatabase, '视图库名');
+  const viewDatabase = getViewDatabase();
   const normalized = String(viewName || '').trim().toLowerCase();
   const fullName = normalized.includes('.') ? normalized : `${viewDatabase}.${normalized}`;
   const [databaseName, tableName] = fullName.split('.', 2);
@@ -931,6 +1007,16 @@ function queryViewOriginText(viewName) {
   return originText;
 }
 
+async function queryViewOriginTextAsync(viewName, job) {
+  const [databaseName, tableName] = viewName.split('.', 2);
+  const output = await runBeelineAsync(['-e',
+    `SELECT origin_text FROM system.views_v WHERE database_name='${sqlString(databaseName)}' AND view_name='${sqlString(tableName)}' LIMIT 1`
+  ], { job });
+  const originText = cleanBeelineLine(output.trim());
+  if (!originText) throw new Error(`system.views_v 中未找到视图或 origin_text 为空：${viewName}`);
+  return originText;
+}
+
 function expandViewSourcesNative(rootView, currentView, visited = new Set()) {
   if (visited.has(currentView)) throw new Error(`检测到视图循环依赖：${[...visited, currentView].join('|')}`);
   visited.add(currentView);
@@ -949,6 +1035,25 @@ function expandViewSourcesNative(rootView, currentView, visited = new Set()) {
   return rows;
 }
 
+async function expandViewSourcesNativeAsync(rootView, currentView, job, visited = new Set()) {
+  if (visited.has(currentView)) throw new Error(`检测到视图循环依赖：${[...visited, currentView].join('|')}`);
+  visited.add(currentView);
+
+  const viewDatabase = String(process.env.VIEW_DATABASE || 'fdm').toLowerCase();
+  const originText = await queryViewOriginTextAsync(currentView, job);
+  const sourceTables = extractBaseTablesFromSql(originText, currentView);
+  const rows = [];
+  for (const source of sourceTables) {
+    if (source.databaseName === viewDatabase) {
+      const nestedRows = await expandViewSourcesNativeAsync(rootView, `${source.databaseName}.${source.tableName}`, job, new Set(visited));
+      rows.push(...nestedRows);
+    } else {
+      rows.push(source);
+    }
+  }
+  return rows;
+}
+
 function buildRowsFromViewNative(items, fields, inputPath) {
   const rows = [];
   const recoverLines = [];
@@ -956,29 +1061,89 @@ function buildRowsFromViewNative(items, fields, inputPath) {
 
   items.forEach((item, index) => {
     if (!item.viewName) return;
-    const viewName = normalizeViewName(item.viewName);
+    const rawViewName = normalizeIdentifierText(item.viewName);
+    let viewName = rawViewName;
     const startDate = normalizeDate(item.startDate, fields.startDate);
     const endDate = normalizeDate(item.endDate, fields.endDate);
-    validateDateRange({ startDate, endDate });
-    const sources = expandViewSourcesNative(viewName, viewName);
-    for (const source of sources) {
-      const key = `${viewName}|${source.databaseName}|${source.tableName}|${startDate}|${endDate}`;
-      if (seen.has(key)) continue;
-      seen.add(key);
-      rows.push(makeRow({
-        id: `view-${index + 1}-${rows.length + 1}`,
+    try {
+      viewName = normalizeViewName(rawViewName);
+      validateDateRange({ startDate, endDate });
+      const sources = expandViewSourcesNative(viewName, viewName);
+      for (const source of sources) {
+        const key = `${viewName}|${source.databaseName}|${source.tableName}|${startDate}|${endDate}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        rows.push(makeRow({
+          id: `view-${index + 1}-${rows.length + 1}`,
+          viewName,
+          databaseName: source.databaseName,
+          tableName: source.tableName,
+          startDate,
+          endDate
+        }));
+        recoverLines.push(`${source.databaseName}.${source.tableName} ${startDate.replace(/-/g, '')}-${endDate.replace(/-/g, '')}`);
+      }
+    } catch (error) {
+      rows.push(markInvalidListRow(makeRow({
+        id: `view-${index + 1}-invalid`,
         viewName,
-        databaseName: source.databaseName,
-        tableName: source.tableName,
+        databaseName: '',
+        tableName: '-',
         startDate,
         endDate
-      }));
-      recoverLines.push(`${source.databaseName}.${source.tableName} ${startDate.replace(/-/g, '')}-${endDate.replace(/-/g, '')}`);
+      }), error));
     }
   });
 
   if (!rows.length) throw new Error('Node 后端未解析到视图源表');
   const configPath = writeTaskConfig(rows, 'view');
+  fs.writeFileSync(path.join(path.dirname(configPath), 'prod_data_recover.txt'), `${[...new Set(recoverLines)].sort().join('\n')}\n`);
+  return { rows, configPath, viewInputPath: inputPath };
+}
+
+async function buildRowsFromViewNativeAsync(items, fields, inputPath, job) {
+  const rows = [];
+  const recoverLines = [];
+  const seen = new Set();
+  const heartbeat = createCountProgressHeartbeat(job, '正在解析视图源表', {
+    intervalMs: 5000,
+    minProgress: 8,
+    maxProgress: 20,
+    step: 1
+  });
+
+  try {
+    for (let index = 0; index < items.length; index += 1) {
+      const item = items[index];
+      if (!item.viewName) continue;
+      const viewName = normalizeViewName(item.viewName);
+      const startDate = normalizeDate(item.startDate, fields.startDate);
+      const endDate = normalizeDate(item.endDate, fields.endDate);
+      validateDateRange({ startDate, endDate });
+      job.logs.push(`解析视图源表：${viewName}`);
+      setCountProgress(job, 'running', Math.min(20, 8 + index), '正在解析视图源表。');
+      const sources = await expandViewSourcesNativeAsync(viewName, viewName, job);
+      for (const source of sources) {
+        const key = `${viewName}|${source.databaseName}|${source.tableName}|${startDate}|${endDate}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        rows.push(makeRow({
+          id: `view-${index + 1}-${rows.length + 1}`,
+          viewName,
+          databaseName: source.databaseName,
+          tableName: source.tableName,
+          startDate,
+          endDate
+        }));
+        recoverLines.push(`${source.databaseName}.${source.tableName} ${startDate.replace(/-/g, '')}-${endDate.replace(/-/g, '')}`);
+      }
+    }
+  } finally {
+    clearInterval(heartbeat);
+  }
+
+  if (!rows.length) throw new Error('Node 后端未解析到视图源表');
+  const configPath = writeTaskConfig(rows, 'count-view');
   fs.writeFileSync(path.join(path.dirname(configPath), 'prod_data_recover.txt'), `${[...new Set(recoverLines)].sort().join('\n')}\n`);
   return { rows, configPath, viewInputPath: inputPath };
 }
@@ -990,7 +1155,7 @@ function buildRowsFromViewScript(items, fields) {
   const input = items
     .filter((item) => item.viewName)
     .map((item) => [
-      item.viewName,
+      normalizeViewName(item.viewName),
       normalizeDate(item.startDate, fields.startDate),
       normalizeDate(item.endDate, fields.endDate)
     ].join(' '))
@@ -1014,16 +1179,31 @@ function buildRowsFromViewScript(items, fields) {
   }
 
   const rows = items.flatMap((item, index) => {
-    const viewName = item.viewName;
-    if (!viewName) return [];
-    return fallbackResolveView(viewName).map((source, sourceIndex) => makeRow({
-      id: `view-${index + 1}-${sourceIndex + 1}`,
-      viewName,
-      databaseName: source.databaseName,
-      tableName: source.tableName,
-      startDate: normalizeDate(item.startDate, fields.startDate),
-      endDate: normalizeDate(item.endDate, fields.endDate)
-    }));
+    if (!item.viewName) return [];
+    const rawViewName = normalizeIdentifierText(item.viewName);
+    const startDate = normalizeDate(item.startDate, fields.startDate);
+    const endDate = normalizeDate(item.endDate, fields.endDate);
+    try {
+      const viewName = normalizeViewName(rawViewName);
+      validateDateRange({ startDate, endDate });
+      return fallbackResolveView(viewName).map((source, sourceIndex) => makeRow({
+        id: `view-${index + 1}-${sourceIndex + 1}`,
+        viewName,
+        databaseName: normalizeIdentifierText(source.databaseName),
+        tableName: normalizeTableName(source.tableName),
+        startDate,
+        endDate
+      }));
+    } catch (error) {
+      return [markInvalidListRow(makeRow({
+        id: `view-${index + 1}-invalid`,
+        viewName: rawViewName,
+        databaseName: '',
+        tableName: '-',
+        startDate,
+        endDate
+      }), error)];
+    }
   });
   const configPath = writeTaskConfig(rows, 'view');
   return { rows, configPath, viewInputPath: inputPath };
@@ -1034,12 +1214,16 @@ function buildRows(fields, file) {
   const end = fields.endDate;
   if (fields.mode === 'full') {
     if (!fields.database) throw new Error('请输入库名');
-    const rows = listDatabaseTables(fields.database).map((tableName, index) => makeRow({
+    const databaseName = normalizeIdentifierText(fields.database);
+    const startDate = normalizeDate(start);
+    const endDate = normalizeDate(end);
+    validateDateRange({ startDate, endDate });
+    const rows = listDatabaseTables(databaseName).map((tableName, index) => makeRow({
       id: `full-${index + 1}`,
-      databaseName: fields.database,
-      tableName,
-      startDate: start,
-      endDate: end
+      databaseName,
+      tableName: normalizeTableName(tableName),
+      startDate,
+      endDate
     }));
     return { rows, configPath: writeTaskConfig(rows, 'full') };
   }
@@ -1051,13 +1235,33 @@ function buildRows(fields, file) {
     return buildRowsFromViewScript(items, fields);
   }
 
-  const rows = items.map((item, index) => makeRow({
-    id: `${fields.mode === 'package' ? 'package' : 'source'}-${index + 1}`,
-    databaseName: item.databaseName,
-    tableName: item.tableName,
-    startDate: normalizeDate(item.startDate, start),
-    endDate: normalizeDate(item.endDate, end)
-  })).filter((row) => row.tableName);
+  if (fields.mode === 'count') {
+    const rows = items.filter((item) => item.tableName).map((item, index) => {
+      const startDate = normalizeDate(item.startDate, start);
+      const endDate = normalizeDate(item.endDate, end);
+      return validateListRowDate(makeRow({
+        id: `count-${index + 1}`,
+        databaseName: normalizeIdentifierText(item.databaseName),
+        tableName: normalizeTableName(item.tableName),
+        startDate,
+        endDate
+      }));
+    });
+    if (!rows.length) throw new Error('数据量查询清单中未识别到表名');
+    return { rows, configPath: writeTaskConfig(rows, 'count-input') };
+  }
+
+  const rows = items.filter((item) => item.tableName).map((item, index) => {
+    const startDate = normalizeDate(item.startDate, start);
+    const endDate = normalizeDate(item.endDate, end);
+    return validateListRowDate(makeRow({
+      id: `${fields.mode === 'package' ? 'package' : 'source'}-${index + 1}`,
+      databaseName: normalizeIdentifierText(item.databaseName),
+      tableName: normalizeTableName(item.tableName),
+      startDate,
+      endDate
+    }));
+  });
   return { rows, configPath: writeTaskConfig(rows, fields.mode === 'package' ? 'package' : 'source') };
 }
 
@@ -1101,12 +1305,17 @@ function sendJob(job, payload = {}) {
   const data = JSON.stringify({
     id: job.id,
     status: job.status,
+    paused: Boolean(job.paused),
     rows: job.rows,
     logs: job.logs.slice(-80),
     summary: zeroCountSummary(job.summary || []),
     summaryTotal: job.summary?.length || 0,
     summaryZeroTotal: zeroCountSummary(job.summary || []).length,
     summaryFile: job.summaryFile ? { fileName: job.summaryFile.fileName, url: job.summaryFile.url } : null,
+    countStatus: job.countStatus || 'idle',
+    countProgress: job.countProgress || 0,
+    countText: job.countText || '',
+    countSkipped: job.countSkipped || 0,
     ...payload
   });
   for (const subscriber of job.subscribers) subscriber.write(`data: ${data}\n\n`);
@@ -1116,19 +1325,135 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function createJob(rows) {
+  return {
+    id: `job-${Date.now()}`,
+    status: 'running',
+    rows: rows.map((row) => {
+      const invalid = row.status === 'failed';
+      return makeRow({
+        ...row,
+        progress: invalid ? Math.max(Number(row.progress || 0), 100) : 0,
+        status: invalid ? 'failed' : 'pending',
+        statusText: invalid ? (row.statusText || statusText.failed) : statusText.pending
+      });
+    }),
+    logs: [],
+    summary: [],
+    countStatus: 'idle',
+    countProgress: 0,
+    countText: '',
+    countSkipped: 0,
+    paused: false,
+    cancelRequested: false,
+    currentChild: null,
+    currentChildren: new Set(),
+    subscribers: new Set()
+  };
+}
+
+function getRestoreRows(job) {
+  return job.restoreRows || job.rows;
+}
+
+function makeCanceledError(message = '任务已终止') {
+  const error = new Error(message);
+  error.code = 'JOB_CANCELED';
+  return error;
+}
+
+function assertJobActive(job) {
+  if (job?.cancelRequested) throw makeCanceledError();
+}
+
+async function waitIfPaused(job) {
+  if (!job) return;
+  while (job.paused && !job.cancelRequested) {
+    await sleep(500);
+  }
+  assertJobActive(job);
+}
+
+async function jobCheckpoint(job) {
+  assertJobActive(job);
+  await waitIfPaused(job);
+}
+
+function signalChildProcess(child, signal) {
+  if (!child?.pid) return false;
+  try {
+    process.kill(-child.pid, signal);
+    return true;
+  } catch {
+    try {
+      child.kill(signal);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+}
+
+function registerJobChild(job, child) {
+  if (!job) return;
+  if (!job.currentChildren) job.currentChildren = new Set();
+  job.currentChildren.add(child);
+  job.currentChild = child;
+}
+
+function unregisterJobChild(job, child) {
+  if (!job) return;
+  job.currentChildren?.delete(child);
+  if (job.currentChild === child) {
+    job.currentChild = [...(job.currentChildren || [])].pop() || null;
+  }
+}
+
+function getJobChildren(job) {
+  if (job?.currentChildren?.size) return [...job.currentChildren];
+  return job?.currentChild ? [job.currentChild] : [];
+}
+
+function markRowsPaused(job) {
+  for (const row of job.rows) {
+    if (row.status === 'running') row.statusText = statusText.paused;
+  }
+}
+
+function markRowsResumed(job) {
+  for (const row of job.rows) {
+    if (row.status === 'running' && row.statusText === statusText.paused) row.statusText = statusText.running;
+  }
+}
+
+function markJobCanceled(job) {
+  job.status = 'canceled';
+  job.cancelRequested = true;
+  job.paused = false;
+  for (const row of job.rows) {
+    if (row.status !== 'completed' && row.status !== 'failed') {
+      row.status = 'failed';
+      row.statusText = statusText.canceled;
+    }
+  }
+}
+
 function createProgressHeartbeat(job, rows, label, options = {}) {
   const intervalMs = options.intervalMs || 12000;
   const maxProgress = options.maxProgress || 88;
   const step = options.step || 1;
-  const targetRows = rows?.length ? rows : job.rows;
   let tick = 0;
   return setInterval(() => {
+    if (job.paused || job.cancelRequested) return;
     tick += 1;
+    const targetRows = options.getRows ? options.getRows() : (rows?.length ? rows : job.rows);
     for (const row of targetRows) {
       if (row.status === 'completed' || row.status === 'failed') continue;
       row.status = 'running';
       row.statusText = label;
-      row.progress = Math.min(maxProgress, Math.max(row.progress || 0, 35) + step);
+      const currentProgress = Number(row.progress || 0);
+      const nextProgress = Math.min(maxProgress, Math.max(currentProgress, 35) + step);
+      row.progress = Math.max(currentProgress, nextProgress);
     }
     job.logs.push(`${label}，已持续 ${Math.round((tick * intervalMs) / 1000)} 秒，请等待 HDFS/Hive 命令返回。`);
     sendJob(job);
@@ -1136,6 +1461,7 @@ function createProgressHeartbeat(job, rows, label, options = {}) {
 }
 
 async function runWithProgressHeartbeat(job, rows, label, maxProgress, work) {
+  await jobCheckpoint(job);
   const heartbeat = createProgressHeartbeat(job, rows, label, { maxProgress });
   try {
     return await work();
@@ -1158,14 +1484,14 @@ async function runHdfsPutWithRetry(job, row, putArgs, cleanupArgs, label, maxPro
         sendJob(job);
       }
       await runWithProgressHeartbeat(job, [row], label, maxProgress, () => (
-        runHdfsCommandAsync(putArgs, { onData: (chunk) => appendLog(job, chunk) })
+        runHdfsCommandAsync(putArgs, { job, onData: (chunk) => appendLog(job, chunk) })
       ));
       return;
     } catch (error) {
       if (!isRetryableHdfsPutError(error) || attempt >= maxAttempts) throw error;
       job.logs.push(`${label} 遇到 HDFS 临时写入/租约异常，清理目标后重试：${error.message}`);
       try {
-        await runHdfsCommandAsync(cleanupArgs, { allowFailure: true, onData: (chunk) => appendLog(job, chunk) });
+        await runHdfsCommandAsync(cleanupArgs, { job, allowFailure: true, onData: (chunk) => appendLog(job, chunk) });
       } catch (cleanupError) {
         job.logs.push(`重试前清理目标失败，将继续重试：${cleanupError.message}`);
       }
@@ -1178,7 +1504,7 @@ async function runHdfsBatchPutThenPartitionFallback(job, row, localPartitionDirs
   try {
     job.logs.push(`优先批量上传 ${localPartitionDirs.length} 个分区目录 -> ${tableRoot}/`);
     await runWithProgressHeartbeat(job, [row], '批量上传 HDFS 分区中', 88, () => (
-      runHdfsCommandAsync(['-put', '-f', ...localPartitionDirs, `${tableRoot}/`], { onData: (chunk) => appendLog(job, chunk) })
+      runHdfsCommandAsync(['-put', '-f', ...localPartitionDirs, `${tableRoot}/`], { job, onData: (chunk) => appendLog(job, chunk) })
     ));
     return;
   } catch (error) {
@@ -1187,10 +1513,11 @@ async function runHdfsBatchPutThenPartitionFallback(job, row, localPartitionDirs
   }
 
   for (let index = 0; index < localPartitionDirs.length; index += 1) {
+    await jobCheckpoint(job);
     const localPartitionDir = localPartitionDirs[index];
     const hdfsPartitionDir = hdfsPartitionDirs[index];
     row.statusText = `上传 HDFS 分区 ${index + 1}/${localPartitionDirs.length}`;
-    row.progress = Math.min(88, Math.max(row.progress || 0, 52 + Math.round((index / localPartitionDirs.length) * 30)));
+    row.progress = Math.max(row.progress || 0, Math.min(88, 52 + Math.round((index / localPartitionDirs.length) * 30)));
     sendJob(job);
     await runHdfsPutWithRetry(
       job,
@@ -1200,7 +1527,7 @@ async function runHdfsBatchPutThenPartitionFallback(job, row, localPartitionDirs
       `上传分区 ${path.basename(localPartitionDir)}`,
       88
     );
-    row.progress = Math.min(90, 58 + Math.round(((index + 1) / localPartitionDirs.length) * 30));
+    row.progress = Math.max(row.progress || 0, Math.min(90, 58 + Math.round(((index + 1) / localPartitionDirs.length) * 30)));
     sendJob(job);
   }
 }
@@ -1214,18 +1541,45 @@ function appendLog(job, chunk) {
   sendJob(job);
 }
 
+function nextShellRowIndex(job, fromIndex = -1) {
+  const shellRows = job.shellRows || getRestoreRows(job);
+  const startIndex = Math.max(0, fromIndex + 1);
+  for (let index = startIndex; index < shellRows.length; index += 1) {
+    if (shellRows[index].status !== 'completed' && shellRows[index].status !== 'failed') return index;
+  }
+  for (let index = 0; index < startIndex; index += 1) {
+    if (shellRows[index].status !== 'completed' && shellRows[index].status !== 'failed') return index;
+  }
+  return -1;
+}
+
+function getShellHeartbeatRows(job) {
+  const shellRows = job.shellRows || getRestoreRows(job);
+  const activeIndex = Number.isInteger(job.activeShellRowIndex) ? job.activeShellRowIndex : nextShellRowIndex(job);
+  if (activeIndex >= 0 && shellRows[activeIndex]?.status !== 'completed' && shellRows[activeIndex]?.status !== 'failed') {
+    return [shellRows[activeIndex]];
+  }
+  const nextIndex = nextShellRowIndex(job, activeIndex);
+  job.activeShellRowIndex = nextIndex;
+  return nextIndex >= 0 ? [shellRows[nextIndex]] : [];
+}
+
 function updateRowsFromScriptLine(job, line) {
+  const shellRows = job.shellRows || getRestoreRows(job);
   const lineNo = Number(/配置文件第\s+(\d+)\s+行/.exec(line)?.[1] || /视图列表第\s+(\d+)\s+行/.exec(line)?.[1]);
-  if (!lineNo || !job.rows[lineNo - 1]) return;
-  const row = job.rows[lineNo - 1];
+  if (!lineNo || !shellRows[lineNo - 1]) return;
+  job.activeShellRowIndex = lineNo - 1;
+  const row = shellRows[lineNo - 1];
   if (line.includes('处理成功')) {
-    row.progress = 92;
-    row.status = 'running';
-    row.statusText = '待回查';
+    row.progress = 100;
+    row.status = 'completed';
+    row.statusText = statusText.completed;
+    job.activeShellRowIndex = nextShellRowIndex(job, lineNo - 1);
   } else if (line.includes('处理失败') || line.includes('错误')) {
     row.progress = Math.max(row.progress || 0, 30);
     row.status = 'failed';
     row.statusText = statusText.failed;
+    job.activeShellRowIndex = nextShellRowIndex(job, lineNo - 1);
   } else {
     row.progress = Math.max(row.progress || 0, 35);
     row.status = 'running';
@@ -1252,20 +1606,30 @@ function getRestoreArgs(restoreMode, configPath, options) {
 
 async function executeRestoreScript(job, restoreMode, configPath, options) {
   const args = getRestoreArgs(restoreMode, configPath, options);
+  job.activeShellRowIndex = nextShellRowIndex(job);
+  await jobCheckpoint(job);
   await new Promise((resolve, reject) => {
-    const child = spawn('bash', args, { cwd: rootDir, env: process.env });
-    const heartbeat = createProgressHeartbeat(job, job.rows, 'shell 备用方案执行中', {
+    const child = spawn('bash', args, { cwd: rootDir, detached: true, env: process.env });
+    registerJobChild(job, child);
+    const heartbeat = createProgressHeartbeat(job, [], 'shell 备用方案执行中', {
       maxProgress: 88,
-      intervalMs: 10000
+      intervalMs: 10000,
+      getRows: () => getShellHeartbeatRows(job)
     });
     child.stdout.on('data', (chunk) => appendLog(job, chunk));
     child.stderr.on('data', (chunk) => appendLog(job, chunk));
     child.on('error', (error) => {
       clearInterval(heartbeat);
+      unregisterJobChild(job, child);
       reject(error);
     });
     child.on('exit', (code) => {
       clearInterval(heartbeat);
+      unregisterJobChild(job, child);
+      if (job.cancelRequested) {
+        reject(makeCanceledError());
+        return;
+      }
       if (code === 0) resolve();
       else reject(new Error(`${path.basename(args[0])} 退出码 ${code}`));
     });
@@ -1279,10 +1643,28 @@ function markRowProgress(job, row, progress, text = statusText.running) {
   sendJob(job);
 }
 
+function markRowCompleted(job, row) {
+  row.progress = 100;
+  row.status = 'completed';
+  row.statusText = statusText.completed;
+  sendJob(job);
+}
+
+function markRowFailedAndContinue(job, row, error, actionLabel = '恢复') {
+  if (error?.code === 'JOB_CANCELED') throw error;
+  row.progress = Math.max(Number(row.progress || 0), 30);
+  row.status = 'failed';
+  row.statusText = statusText.failed;
+  job.logs.push(`${actionLabel}任务失败，已跳过 ${row.databaseName}.${row.tableName}，继续处理后续任务：${error.message}`);
+  sendJob(job);
+}
+
 function effectiveCrossRows(rows, targetDatabase) {
+  const normalizedTargetDatabase = normalizeIdentifierText(targetDatabase);
   return rows.map((row) => ({
     ...row,
-    databaseName: row.databaseName || targetDatabase || ''
+    databaseName: normalizeIdentifierText(row.databaseName) || normalizedTargetDatabase || '',
+    tableName: normalizeTableName(row.tableName)
   }));
 }
 
@@ -1311,6 +1693,7 @@ function copyLocalPartitionsToStage(row, sourceRoot, stageRoot, job) {
   removeLocalDirInsideRoot(stageBase, tableStageDir);
 
   for (const statDate of enumerateDates(row.startDate, row.endDate)) {
+    assertJobActive(job);
     const sourcePartition = path.join(sourceBase, statDate, row.tableName, `${partitionColumn}=${statDate}`);
     const targetPartition = path.join(stageBase, row.tableName, `${partitionColumn}=${statDate}`);
     if (!fs.existsSync(sourcePartition) || !fs.statSync(sourcePartition).isDirectory()) {
@@ -1332,56 +1715,60 @@ async function hdfsReplacePartitionsFromLocal(row, tablePath, localPartitionDirs
   if (!localPartitionDirs.length) return;
   job.logs.push(`删除 ${hdfsPartitionDirs.length} 个旧 HDFS 分区目录`);
   await runWithProgressHeartbeat(job, [row], '删除旧 HDFS 分区中', 70, () => (
-    runHdfsCommandAsync(['-rm', '-r', '-f', ...hdfsPartitionDirs], { onData: (chunk) => appendLog(job, chunk) })
+    runHdfsCommandAsync(['-rm', '-r', '-f', ...hdfsPartitionDirs], { job, onData: (chunk) => appendLog(job, chunk) })
   ));
   const tableRoot = tablePath.replace(/\/+$/, '');
-  await runHdfsCommandAsync(['-mkdir', '-p', tableRoot], { onData: (chunk) => appendLog(job, chunk) });
+  await runHdfsCommandAsync(['-mkdir', '-p', tableRoot], { job, onData: (chunk) => appendLog(job, chunk) });
   await runHdfsBatchPutThenPartitionFallback(job, row, localPartitionDirs, hdfsPartitionDirs, tableRoot);
   await runWithProgressHeartbeat(job, [row], '修复 Hive 分区中', 92, () => (
-    runBeelineAsync(['-e', `USE ${row.databaseName};MSCK REPAIR TABLE ${row.tableName}`], { onData: (chunk) => appendLog(job, chunk) })
+    runBeelineAsync(['-e', `USE ${row.databaseName};MSCK REPAIR TABLE ${row.tableName}`], { job, onData: (chunk) => appendLog(job, chunk) })
   ));
   job.logs.push(`${row.databaseName}.${row.tableName} 分区修复完成`);
 }
 
 async function executeContinuousNative(job, options) {
-  const metadata = buildTableMetadata(job.rows);
+  const restoreRows = getRestoreRows(job);
+  const metadata = buildTableMetadata(restoreRows);
   const partitionColumn = getPartitionColumn();
-  for (let index = 0; index < job.rows.length; index += 1) {
-    const row = job.rows[index];
-    validateIdentifier(row.databaseName, '库名');
-    validateIdentifier(row.tableName, '表名');
-    validateDateRange(row);
-    markRowProgress(job, row, 16, '复制到中转目录');
+  for (let index = 0; index < restoreRows.length; index += 1) {
+    const row = restoreRows[index];
+    try {
+      await jobCheckpoint(job);
+      validateIdentifier(row.databaseName, '库名');
+      validateIdentifier(row.tableName, '表名');
+      validateDateRange(row);
+      markRowProgress(job, row, 16, '复制到中转目录');
 
-    const preparedDates = copyLocalPartitionsToStage(row, options.sourceRoot, options.stageRoot, job);
-    if (!preparedDates.length) {
-      job.logs.push(`提示：${row.databaseName}.${row.tableName} 没有找到可处理的源分区，跳过`);
-      row.progress = 100;
-      row.status = 'completed';
-      row.statusText = statusText.completed;
-      sendJob(job);
-      continue;
+      const preparedDates = copyLocalPartitionsToStage(row, options.sourceRoot, options.stageRoot, job);
+      if (!preparedDates.length) {
+        job.logs.push(`提示：${row.databaseName}.${row.tableName} 没有找到可处理的源分区，跳过`);
+        row.progress = 100;
+        row.status = 'completed';
+        row.statusText = statusText.completed;
+        sendJob(job);
+        continue;
+      }
+
+      const key = tableKey(row);
+      if (!metadata.partitionedTables.has(key)) {
+        job.logs.push(`提示：${key} 不是分区表，跳过 HDFS 上传和分区修复`);
+        row.progress = 100;
+        row.status = 'completed';
+        row.statusText = statusText.completed;
+        sendJob(job);
+        continue;
+      }
+
+      markRowProgress(job, row, 52, '替换 HDFS 分区');
+      const tablePath = getMetadataLocation(metadata, row);
+      const localPartitionDirs = preparedDates.map((statDate) => path.join(path.resolve(options.stageRoot), row.tableName, `${partitionColumn}=${statDate}`));
+      const hdfsPartitionDirs = preparedDates.map((statDate) => `${tablePath.replace(/\/+$/, '')}/${partitionColumn}=${statDate}`);
+      await hdfsReplacePartitionsFromLocal(row, tablePath, localPartitionDirs, hdfsPartitionDirs, job);
+      removeLocalDirInsideRoot(options.stageRoot, path.join(options.stageRoot, row.tableName));
+      markRowCompleted(job, row);
+    } catch (error) {
+      markRowFailedAndContinue(job, row, error, '连续时间段恢复');
     }
-
-    const key = tableKey(row);
-    if (!metadata.partitionedTables.has(key)) {
-      job.logs.push(`提示：${key} 不是分区表，跳过 HDFS 上传和分区修复`);
-      row.progress = 100;
-      row.status = 'completed';
-      row.statusText = statusText.completed;
-      sendJob(job);
-      continue;
-    }
-
-    markRowProgress(job, row, 52, '替换 HDFS 分区');
-    const tablePath = getMetadataLocation(metadata, row);
-    const localPartitionDirs = preparedDates.map((statDate) => path.join(path.resolve(options.stageRoot), row.tableName, `${partitionColumn}=${statDate}`));
-    const hdfsPartitionDirs = preparedDates.map((statDate) => `${tablePath.replace(/\/+$/, '')}/${partitionColumn}=${statDate}`);
-    await hdfsReplacePartitionsFromLocal(row, tablePath, localPartitionDirs, hdfsPartitionDirs, job);
-    removeLocalDirInsideRoot(options.stageRoot, path.join(options.stageRoot, row.tableName));
-    row.progress = Math.max(row.progress || 0, 92);
-    row.statusText = '待回查';
-    sendJob(job);
   }
 }
 
@@ -1391,6 +1778,7 @@ function getValidLocalPartitionDirs(row, sourceRoot, job) {
   const sourcePartitions = [];
   const hdfsDates = [];
   for (const statDate of enumerateDates(row.startDate, row.endDate)) {
+    assertJobActive(job);
     const sourcePartition = path.join(sourceBase, statDate, row.tableName, `${partitionColumn}=${statDate}`);
     const files = listRegularFiles(sourcePartition);
     if (!fs.existsSync(sourcePartition) || !fs.statSync(sourcePartition).isDirectory()) {
@@ -1406,134 +1794,156 @@ function getValidLocalPartitionDirs(row, sourceRoot, job) {
 }
 
 async function executeSingleNative(job, options) {
-  const metadata = buildTableMetadata(job.rows);
+  const restoreRows = getRestoreRows(job);
+  const metadata = buildTableMetadata(restoreRows);
   const partitionColumn = getPartitionColumn();
   ensureLocalDirectory(options.sourceRoot, '分区表源根目录');
   ensureLocalDirectory(options.nonPartitionSourceRoot, '非分区表源根目录');
 
-  for (const row of job.rows) {
-    validateIdentifier(row.databaseName, '库名');
-    validateIdentifier(row.tableName, '表名');
-    validateDateRange(row);
-    markRowProgress(job, row, 18, '查询表路径');
+  for (const row of restoreRows) {
+    try {
+      await jobCheckpoint(job);
+      validateIdentifier(row.databaseName, '库名');
+      validateIdentifier(row.tableName, '表名');
+      validateDateRange(row);
+      markRowProgress(job, row, 18, '查询表路径');
 
-    const key = tableKey(row);
-    const tablePath = getMetadataLocation(metadata, row);
-    if (metadata.partitionedTables.has(key)) {
-      const { sourcePartitions, hdfsDates } = getValidLocalPartitionDirs(row, options.sourceRoot, job);
-      if (!sourcePartitions.length) {
-        job.logs.push(`警告：${key} 没有可上传的有效分区，跳过`);
-        row.progress = 100;
-        row.status = 'completed';
-        row.statusText = statusText.completed;
-        sendJob(job);
-        continue;
+      const key = tableKey(row);
+      const tablePath = getMetadataLocation(metadata, row);
+      if (metadata.partitionedTables.has(key)) {
+        const { sourcePartitions, hdfsDates } = getValidLocalPartitionDirs(row, options.sourceRoot, job);
+        if (!sourcePartitions.length) {
+          job.logs.push(`警告：${key} 没有可上传的有效分区，跳过`);
+          row.progress = 100;
+          row.status = 'completed';
+          row.statusText = statusText.completed;
+          sendJob(job);
+          continue;
+        }
+        markRowProgress(job, row, 52, '上传分区数据');
+        const hdfsPartitions = hdfsDates.map((statDate) => `${tablePath.replace(/\/+$/, '')}/${partitionColumn}=${statDate}`);
+        await hdfsReplacePartitionsFromLocal(row, tablePath, sourcePartitions, hdfsPartitions, job);
+      } else {
+        const sourceTable = path.join(path.resolve(options.nonPartitionSourceRoot), row.tableName);
+        const sourceFiles = listRegularFiles(sourceTable);
+        if (!sourceFiles.length) {
+          job.logs.push(`警告：非分区表源目录不存在或没有普通文件，跳过：${sourceTable}`);
+          row.progress = 100;
+          row.status = 'completed';
+          row.statusText = statusText.completed;
+          sendJob(job);
+          continue;
+        }
+        markRowProgress(job, row, 52, '上传非分区表数据');
+        job.logs.push(`删除非分区表旧 HDFS 数据：${tablePath.replace(/\/+$/, '')}/*`);
+        await runWithProgressHeartbeat(job, [row], '删除非分区表旧数据中', 70, () => (
+          runHdfsCommandAsync(['-rm', '-r', '-f', `${tablePath.replace(/\/+$/, '')}/*`], { job, onData: (chunk) => appendLog(job, chunk) })
+        ));
+        const tableRoot = tablePath.replace(/\/+$/, '');
+        await runHdfsCommandAsync(['-mkdir', '-p', tableRoot], { job, onData: (chunk) => appendLog(job, chunk) });
+        await runHdfsPutWithRetry(
+          job,
+          row,
+          ['-put', '-f', ...sourceFiles, `${tableRoot}/`],
+          ['-rm', '-r', '-f', `${tableRoot}/*`],
+          '上传非分区表数据中',
+          88
+        );
+        job.logs.push(`${key} 非分区表数据上传完成`);
       }
-      markRowProgress(job, row, 52, '上传分区数据');
-      const hdfsPartitions = hdfsDates.map((statDate) => `${tablePath.replace(/\/+$/, '')}/${partitionColumn}=${statDate}`);
-      await hdfsReplacePartitionsFromLocal(row, tablePath, sourcePartitions, hdfsPartitions, job);
-    } else {
-      const sourceTable = path.join(path.resolve(options.nonPartitionSourceRoot), row.tableName);
-      const sourceFiles = listRegularFiles(sourceTable);
-      if (!sourceFiles.length) {
-        job.logs.push(`警告：非分区表源目录不存在或没有普通文件，跳过：${sourceTable}`);
-        row.progress = 100;
-        row.status = 'completed';
-        row.statusText = statusText.completed;
-        sendJob(job);
-        continue;
-      }
-      markRowProgress(job, row, 52, '上传非分区表数据');
-      job.logs.push(`删除非分区表旧 HDFS 数据：${tablePath.replace(/\/+$/, '')}/*`);
-      await runWithProgressHeartbeat(job, [row], '删除非分区表旧数据中', 70, () => (
-        runHdfsCommandAsync(['-rm', '-r', '-f', `${tablePath.replace(/\/+$/, '')}/*`], { onData: (chunk) => appendLog(job, chunk) })
-      ));
-      const tableRoot = tablePath.replace(/\/+$/, '');
-      await runHdfsCommandAsync(['-mkdir', '-p', tableRoot], { onData: (chunk) => appendLog(job, chunk) });
-      await runHdfsPutWithRetry(
-        job,
-        row,
-        ['-put', '-f', ...sourceFiles, `${tableRoot}/`],
-        ['-rm', '-r', '-f', `${tableRoot}/*`],
-        '上传非分区表数据中',
-        88
-      );
-      job.logs.push(`${key} 非分区表数据上传完成`);
+      markRowCompleted(job, row);
+    } catch (error) {
+      markRowFailedAndContinue(job, row, error, '单日期恢复');
     }
-    row.progress = Math.max(row.progress || 0, 92);
-    row.statusText = '待回查';
-    sendJob(job);
   }
 }
 
 async function executeCrossNative(job) {
   const sourceDatabase = getSourceDatabase();
   const partitionColumn = getPartitionColumn();
-  const targetRows = job.rows;
-  const sourceRows = targetRows.map((row) => ({ ...row, databaseName: sourceDatabase }));
-  const sourceMetadata = buildTableMetadata(sourceRows);
-  const targetMetadata = buildTableMetadata(targetRows);
+  const targetRows = getRestoreRows(job);
+  const partitionedCache = new Map();
+  const locationCache = new Map();
+
+  const isPartitionedCached = (databaseName, tableName) => {
+    const key = `${databaseName}.${tableName}`;
+    if (!partitionedCache.has(key)) partitionedCache.set(key, isPartitionedTable(databaseName, tableName));
+    return partitionedCache.get(key);
+  };
+
+  const getLocationCached = (databaseName, tableName) => {
+    const key = `${databaseName}.${tableName}`;
+    if (!locationCache.has(key)) locationCache.set(key, getTableLocation(databaseName, tableName));
+    return locationCache.get(key);
+  };
+
+  job.logs.push(`跨库恢复源库：${sourceDatabase}；目标库优先使用清单库名，清单为空时使用页面跨库目标库。`);
 
   for (const row of targetRows) {
-    validateIdentifier(row.databaseName, '目标库名');
-    validateIdentifier(row.tableName, '表名');
-    validateDateRange(row);
-    if (row.databaseName === sourceDatabase) throw new Error(`目标库与源库相同，拒绝覆盖源表：${sourceDatabase}.${row.tableName}`);
-    markRowProgress(job, row, 18, '准备跨库分区');
+    try {
+      await jobCheckpoint(job);
+      validateIdentifier(row.databaseName, '目标库名');
+      validateIdentifier(row.tableName, '表名');
+      validateDateRange(row);
+      if (row.databaseName === sourceDatabase) throw new Error(`目标库与源库相同，拒绝覆盖源表：${sourceDatabase}.${row.tableName}`);
+      markRowProgress(job, row, 18, '准备跨库分区');
 
-    const sourceKey = `${sourceDatabase}.${row.tableName}`;
-    const targetKey = tableKey(row);
-    if (!sourceMetadata.partitionedTables.has(sourceKey)) throw new Error(`${sourceKey} 不是分区表，无法跨库按日期复制`);
-    if (!targetMetadata.partitionedTables.has(targetKey)) throw new Error(`${targetKey} 不是分区表，无法跨库按日期复制`);
+      const sourceKey = `${sourceDatabase}.${row.tableName}`;
+      const targetKey = tableKey(row);
+      if (!isPartitionedCached(sourceDatabase, row.tableName)) throw new Error(`${sourceKey} 不是分区表，无法跨库按日期复制`);
+      if (!isPartitionedCached(row.databaseName, row.tableName)) throw new Error(`${targetKey} 不是分区表，无法跨库按日期复制`);
 
-    const sourceTablePath = sourceMetadata.tableLocations.get(sourceKey);
-    const targetTablePath = targetMetadata.tableLocations.get(targetKey);
-    if (!sourceTablePath || !targetTablePath) throw new Error(`未查询到跨库表路径：${sourceKey} -> ${targetKey}`);
-    validateHdfsTablePath(sourceTablePath);
-    validateHdfsTablePath(targetTablePath);
-    if (sourceTablePath === targetTablePath) throw new Error(`源表和目标表 HDFS 路径相同，拒绝执行：${sourceTablePath}`);
+      const sourceTablePath = getLocationCached(sourceDatabase, row.tableName);
+      const targetTablePath = getLocationCached(row.databaseName, row.tableName);
+      if (!sourceTablePath || !targetTablePath) throw new Error(`未查询到跨库表路径：${sourceKey} -> ${targetKey}`);
+      validateHdfsTablePath(sourceTablePath);
+      validateHdfsTablePath(targetTablePath);
+      if (sourceTablePath === targetTablePath) throw new Error(`源表和目标表 HDFS 路径相同，拒绝执行：${sourceTablePath}`);
 
-    const sourcePartitions = [];
-    const targetPartitions = [];
-    for (const statDate of enumerateDates(row.startDate, row.endDate)) {
-      const sourcePartition = `${sourceTablePath.replace(/\/+$/, '')}/${partitionColumn}=${statDate}`;
-      const targetPartition = `${targetTablePath.replace(/\/+$/, '')}/${partitionColumn}=${statDate}`;
-      if (hdfsTestDir(sourcePartition)) {
-        sourcePartitions.push(sourcePartition);
-        targetPartitions.push(targetPartition);
-      } else {
-        job.logs.push(`警告：源分区目录不存在，跳过日期 ${statDate}：${sourcePartition}`);
+      const sourcePartitions = [];
+      const targetPartitions = [];
+      for (const statDate of enumerateDates(row.startDate, row.endDate)) {
+        await jobCheckpoint(job);
+        const sourcePartition = `${sourceTablePath.replace(/\/+$/, '')}/${partitionColumn}=${statDate}`;
+        const targetPartition = `${targetTablePath.replace(/\/+$/, '')}/${partitionColumn}=${statDate}`;
+        if (hdfsTestDir(sourcePartition)) {
+          sourcePartitions.push(sourcePartition);
+          targetPartitions.push(targetPartition);
+        } else {
+          job.logs.push(`警告：源分区目录不存在，跳过日期 ${statDate}：${sourcePartition}`);
+        }
       }
-    }
 
-    if (!sourcePartitions.length) {
-      job.logs.push(`警告：${sourceKey} 在指定日期范围内没有可复制的源分区，跳过`);
-      row.progress = 100;
-      row.status = 'completed';
-      row.statusText = statusText.completed;
-      sendJob(job);
-      continue;
-    }
-
-    markRowProgress(job, row, 52, '复制跨库分区');
-    await runWithProgressHeartbeat(job, [row], '删除目标 HDFS 分区中', 70, () => (
-      runHdfsCommandAsync(['-rm', '-r', '-f', ...targetPartitions], { onData: (chunk) => appendLog(job, chunk) })
-    ));
-    await runHdfsCommandAsync(['-mkdir', '-p', ...targetPartitions], { onData: (chunk) => appendLog(job, chunk) });
-    for (let index = 0; index < sourcePartitions.length; index += 1) {
-      job.logs.push(`复制分区数据：${sourcePartitions[index]} -> ${targetPartitions[index]}/`);
-      await runWithProgressHeartbeat(job, [row], `复制跨库分区 ${index + 1}/${sourcePartitions.length}`, 88, async () => {
-        await runHdfsCommandAsync(['-cp', `${sourcePartitions[index].replace(/\/+$/, '')}/*`, `${targetPartitions[index].replace(/\/+$/, '')}/`], { onData: (chunk) => appendLog(job, chunk) });
-        row.progress = Math.min(90, Math.round(52 + ((index + 1) / sourcePartitions.length) * 38));
+      if (!sourcePartitions.length) {
+        job.logs.push(`警告：${sourceKey} 在指定日期范围内没有可复制的源分区，跳过`);
+        row.progress = 100;
+        row.status = 'completed';
+        row.statusText = statusText.completed;
         sendJob(job);
-      });
+        continue;
+      }
+
+      markRowProgress(job, row, 52, '复制跨库分区');
+      await runWithProgressHeartbeat(job, [row], '删除目标 HDFS 分区中', 70, () => (
+        runHdfsCommandAsync(['-rm', '-r', '-f', ...targetPartitions], { job, onData: (chunk) => appendLog(job, chunk) })
+      ));
+      await runHdfsCommandAsync(['-mkdir', '-p', ...targetPartitions], { job, onData: (chunk) => appendLog(job, chunk) });
+      for (let index = 0; index < sourcePartitions.length; index += 1) {
+        await jobCheckpoint(job);
+        job.logs.push(`复制分区数据：${sourcePartitions[index]} -> ${targetPartitions[index]}/`);
+        await runWithProgressHeartbeat(job, [row], `复制跨库分区 ${index + 1}/${sourcePartitions.length}`, 88, async () => {
+          await runHdfsCommandAsync(['-cp', `${sourcePartitions[index].replace(/\/+$/, '')}/*`, `${targetPartitions[index].replace(/\/+$/, '')}/`], { job, onData: (chunk) => appendLog(job, chunk) });
+          row.progress = Math.max(row.progress || 0, Math.min(90, Math.round(52 + ((index + 1) / sourcePartitions.length) * 38)));
+          sendJob(job);
+        });
+      }
+      await runWithProgressHeartbeat(job, [row], '修复 Hive 分区中', 92, () => (
+        runBeelineAsync(['-e', `USE ${row.databaseName};MSCK REPAIR TABLE ${row.tableName}`], { job, onData: (chunk) => appendLog(job, chunk) })
+      ));
+      markRowCompleted(job, row);
+    } catch (error) {
+      markRowFailedAndContinue(job, row, error, '跨库数据恢复');
     }
-    await runWithProgressHeartbeat(job, [row], '修复 Hive 分区中', 92, () => (
-      runBeelineAsync(['-e', `USE ${row.databaseName};MSCK REPAIR TABLE ${row.tableName}`], { onData: (chunk) => appendLog(job, chunk) })
-    ));
-    row.progress = Math.max(row.progress || 0, 92);
-    row.statusText = '待回查';
-    sendJob(job);
   }
 }
 
@@ -1544,6 +1954,11 @@ async function executeRestoreNative(job, restoreMode, options) {
   throw new Error(`未知恢复方式：${restoreMode}`);
 }
 
+function shouldFallbackToShell(error) {
+  const message = String(error?.message || error || '');
+  return !/(目标库与源库相同|日期范围不合法|开始日期晚于|不合法|不是分区表|无法跨库|未查询到表路径|无法判断|源表和目标表 HDFS 路径相同)/.test(message);
+}
+
 async function executeRestoreNativeWithShellFallback(job, restoreMode, configPath, options) {
   try {
     job.logs.push('开始执行 Node 后端恢复逻辑。');
@@ -1551,6 +1966,10 @@ async function executeRestoreNativeWithShellFallback(job, restoreMode, configPat
     await executeRestoreNative(job, restoreMode, options);
     job.logs.push('Node 后端恢复逻辑执行完成。');
   } catch (nativeError) {
+    if (!shouldFallbackToShell(nativeError)) {
+      job.logs.push(`Node 后端恢复校验失败，未调用 shell 备用方案：${nativeError.message}`);
+      throw nativeError;
+    }
     job.logs.push(`Node 后端恢复失败，准备调用 shell 备用方案：${nativeError.message}`);
     sendJob(job);
     await executeRestoreScript(job, restoreMode, configPath, options);
@@ -1592,12 +2011,26 @@ function makeSummaryItem(row, statDate, count, index) {
     databaseName: row.databaseName || '',
     tableName: row.tableName || '',
     statDate,
-    count: Number.isFinite(Number(count)) ? Number(count) : 0
+    count: count == null || count === ''
+      ? null
+      : Number.isFinite(Number(count)) ? Number(count) : 0,
+    queryStatus: '查询成功',
+    queryError: ''
   };
 }
 
 function zeroCountSummary(summary) {
-  return summary.filter((item) => Number(item.count) === 0);
+  return summary.filter((item) => item.count != null && Number(item.count) === 0);
+}
+
+function makeSkippedSummaryItems(row, error, index) {
+  const dates = enumerateDates(row.startDate, row.endDate);
+  const statDates = dates.length ? dates : ['ALL'];
+  return statDates.map((statDate, dateIndex) => ({
+    ...makeSummaryItem(row, statDate, null, `${index}-${dateIndex}`),
+    queryStatus: '已跳过',
+    queryError: error
+  }));
 }
 
 function writeCountSummaryWorkbook(job) {
@@ -1611,6 +2044,71 @@ function writeCountSummaryWorkbook(job) {
   };
 }
 
+function setCountProgress(job, status, progress, text) {
+  job.countStatus = status;
+  const nextProgress = Math.max(0, Math.min(100, Number(progress) || 0));
+  const terminal = status === 'completed' || status === 'failed' || status === 'canceled';
+  job.countProgress = terminal ? 100 : Math.max(job.countProgress || 0, nextProgress);
+  job.countText = text;
+  sendJob(job);
+}
+
+function buildCountQueryRows(inputRows, queryMode) {
+  if (queryMode === 'view-count') {
+    const viewDatabase = getViewDatabase();
+    const items = inputRows.map((row) => ({
+      viewName: normalizeIdentifierText(row.tableName).includes('.')
+        ? normalizeIdentifierText(row.tableName)
+        : `${normalizeIdentifierText(row.databaseName) || viewDatabase}.${normalizeIdentifierText(row.tableName)}`,
+      startDate: row.startDate,
+      endDate: row.endDate
+    }));
+    return buildRowsFromViewScript(items, { startDate: '', endDate: '' });
+  }
+
+  if (queryMode === 'source-count') {
+    const rows = inputRows.map((row, index) => {
+      const databaseName = normalizeIdentifierText(row.databaseName);
+      const tableName = normalizeIdentifierText(row.tableName);
+      if (!databaseName) throw new Error(`贴源表数据量查询第 ${index + 1} 行缺少库名`);
+      validateIdentifier(databaseName, '库名');
+      validateIdentifier(tableName, '表名');
+      validateDateRange(row);
+      return makeRow({
+        ...row,
+        id: `count-source-${index + 1}`,
+        databaseName,
+        tableName
+      });
+    });
+    return { rows, configPath: writeTaskConfig(rows, 'count-source') };
+  }
+
+  throw new Error(`未知数据量查询方式：${queryMode}`);
+}
+
+async function buildCountQueryRowsAsync(inputRows, queryMode, job) {
+  if (queryMode !== 'view-count' || !isExecutionEnabled()) {
+    return buildCountQueryRows(inputRows, queryMode);
+  }
+
+  const viewDatabase = getViewDatabase();
+  const items = inputRows.map((row) => ({
+    viewName: normalizeIdentifierText(row.tableName).includes('.')
+      ? normalizeIdentifierText(row.tableName)
+      : `${normalizeIdentifierText(row.databaseName) || viewDatabase}.${normalizeIdentifierText(row.tableName)}`,
+    startDate: row.startDate,
+    endDate: row.endDate
+  }));
+  const inputPath = path.join(generatedDir, `views-count-${Date.now()}.txt`);
+  const input = items
+    .filter((item) => item.viewName)
+    .map((item) => [normalizeViewName(item.viewName), normalizeDate(item.startDate), normalizeDate(item.endDate)].join(' '))
+    .join('\n');
+  fs.writeFileSync(inputPath, `${input}\n`);
+  return buildRowsFromViewNativeAsync(items, { startDate: '', endDate: '' }, inputPath, job);
+}
+
 function buildTablePredicate(rows) {
   const pairs = new Set(rows.map((row) => `${row.databaseName}.${row.tableName}`));
   return [...pairs].map((pair) => {
@@ -1621,16 +2119,125 @@ function buildTablePredicate(rows) {
   }).join(' OR ');
 }
 
-function queryPartitionedTables(rows) {
-  const predicate = buildTablePredicate(rows);
-  if (!predicate) return new Set();
-  const sql = [
+function buildTablePredicateBatches(rows) {
+  const uniqueRows = [...new Map(rows.map((row) => [
+    `${row.databaseName}.${row.tableName}`,
+    { databaseName: row.databaseName, tableName: row.tableName }
+  ])).values()];
+  const configuredSize = Number.parseInt(process.env.HIVE_METADATA_BATCH_SIZE || '200', 10);
+  const batchSize = Number.isInteger(configuredSize) && configuredSize > 0
+    ? Math.min(configuredSize, 1000)
+    : 200;
+  const predicates = [];
+  for (let index = 0; index < uniqueRows.length; index += batchSize) {
+    predicates.push(buildTablePredicate(uniqueRows.slice(index, index + batchSize)));
+  }
+  return predicates.filter(Boolean);
+}
+
+function writeGeneratedSqlFile(prefix, statements) {
+  generatedSqlSequence += 1;
+  const sqlPath = path.join(generatedDir, `${prefix}-${Date.now()}-${generatedSqlSequence}.sql`);
+  const body = statements
+    .filter(Boolean)
+    .map((statement) => String(statement).trim().replace(/;+$/, ''))
+    .join(';\n');
+  fs.writeFileSync(sqlPath, `${body};\n`);
+  return sqlPath;
+}
+
+function splitRowsIntoBatches(rows, configuredSize, defaultSize, maxSize) {
+  const batchSize = Number.isInteger(configuredSize) && configuredSize > 0
+    ? Math.min(configuredSize, maxSize)
+    : defaultSize;
+  const batches = [];
+  for (let index = 0; index < rows.length; index += batchSize) {
+    batches.push(rows.slice(index, index + batchSize));
+  }
+  return batches;
+}
+
+function getCountQueryBatches(rows) {
+  const configuredSize = Number.parseInt(process.env.HIVE_COUNT_BATCH_SIZE || '200', 10);
+  return splitRowsIntoBatches(rows, configuredSize, 200, 500);
+}
+
+function getCountQueryConcurrency() {
+  const configured = Number.parseInt(process.env.HIVE_COUNT_CONCURRENCY || '4', 10);
+  return Number.isInteger(configured) && configured > 0 ? Math.min(configured, 8) : 4;
+}
+
+async function executeCountBatchesWithConcurrency(job, batches, partitionedTables) {
+  const concurrency = Math.min(getCountQueryConcurrency(), batches.length || 1);
+  const results = new Array(batches.length);
+  const errors = [];
+  let nextIndex = 0;
+  let completed = 0;
+
+  job.logs.push(`数据量查询启用受控并发：${concurrency} 个批次同时执行。`);
+  sendJob(job);
+
+  async function worker() {
+    while (true) {
+      await jobCheckpoint(job);
+      const index = nextIndex;
+      nextIndex += 1;
+      if (index >= batches.length) return;
+      try {
+        results[index] = await executeCountBatchAsync(
+          job,
+          batches[index],
+          partitionedTables,
+          `数据量查询第 ${index + 1}/${batches.length} 批`
+        );
+        completed += 1;
+        setCountProgress(
+          job,
+          'running',
+          28 + Math.round((completed / batches.length) * 48),
+          `数据量查询已完成 ${completed}/${batches.length} 批。`
+        );
+      } catch (error) {
+        errors.push(new Error(`数据量查询第 ${index + 1}/${batches.length} 批最终失败：${error.message}`));
+      }
+    }
+  }
+
+  await Promise.all(Array.from({ length: concurrency }, () => worker()));
+  if (errors.length) throw errors[0];
+  return results;
+}
+
+function buildPartitionMetadataStatements(rows) {
+  return buildTablePredicateBatches(rows).map((predicate) => [
     "SELECT concat(database_name,'.',table_name,'|',cast(count(1) as string))",
     'FROM system.partition_keys_all_v',
     `WHERE ${predicate}`,
     'GROUP BY database_name,table_name'
-  ].join(' ');
-  const output = runBeeline(['-e', sql]);
+  ].join(' '));
+}
+
+function queryPartitionedTables(rows) {
+  const statements = buildPartitionMetadataStatements(rows);
+  if (!statements.length) return new Set();
+  const sqlPath = writeGeneratedSqlFile('partition-metadata', statements);
+  const output = runBeeline(['-f', sqlPath]);
+  const partitioned = new Set();
+  for (const rawLine of output.split(/\r?\n/)) {
+    const line = cleanBeelineLine(rawLine);
+    const [tableKey, count] = line.split('|');
+    if (tableKey && Number(count) > 0) partitioned.add(tableKey);
+  }
+  return partitioned;
+}
+
+async function queryPartitionedTablesAsync(rows, job) {
+  const statements = buildPartitionMetadataStatements(rows);
+  if (!statements.length) return new Set();
+  const sqlPath = writeGeneratedSqlFile('partition-metadata', statements);
+  job.logs.push(`分区元数据查询已写入 SQL 文件，共 ${statements.length} 个批次：${sqlPath}`);
+  sendJob(job);
+  const output = await runBeelineAsync(['-f', sqlPath], { job });
   const partitioned = new Set();
   for (const rawLine of output.split(/\r?\n/)) {
     const line = cleanBeelineLine(rawLine);
@@ -1641,16 +2248,17 @@ function queryPartitionedTables(rows) {
 }
 
 function getTableLocations(rows) {
-  const predicate = buildTablePredicate(rows);
-  if (!predicate) return new Map();
+  const predicates = buildTablePredicateBatches(rows);
+  if (!predicates.length) return new Map();
   const locationColumn = process.env.TABLE_LOCATION_COLUMN || 'table_location';
   validateIdentifier(locationColumn, '表路径字段名');
-  const sql = [
+  const statements = predicates.map((predicate) => [
     `SELECT concat(database_name,'.',table_name,'|',${locationColumn})`,
     'FROM system.tables_v',
     `WHERE ${predicate}`
-  ].join(' ');
-  const output = runBeeline(['-e', sql]);
+  ].join(' '));
+  const sqlPath = writeGeneratedSqlFile('table-locations', statements);
+  const output = runBeeline(['-f', sqlPath]);
   const locations = new Map();
   for (const rawLine of output.split(/\r?\n/)) {
     const line = cleanBeelineLine(rawLine);
@@ -1757,10 +2365,27 @@ function parseCountScriptOutput(outputPath, rows) {
 
 function queryCountsDirect(rows) {
   const partitionedTables = queryPartitionedTables(rows);
+  const summaries = [];
+  const sqlPaths = [];
+  for (const batchRows of getCountQueryBatches(rows)) {
+    const statements = buildCountSqlStatements(batchRows, partitionedTables);
+    const sqlPath = writeGeneratedSqlFile('count-direct', statements);
+    sqlPaths.push(sqlPath);
+    const output = runBeeline(['-f', sqlPath]);
+    summaries.push(...parseDirectCountOutput(output, batchRows, partitionedTables));
+  }
+  return {
+    sqlPath: sqlPaths[0] || '',
+    batchCount: sqlPaths.length,
+    summary: summaries
+  };
+}
+
+function buildCountSqlStatements(rows, partitionedTables) {
   const partitionColumn = process.env.PARTITION_COLUMN || 'tx_dt';
   validateIdentifier(partitionColumn, '分区字段名');
 
-  const statements = rows.map((row, index) => {
+  return rows.map((row, index) => {
     validateIdentifier(row.databaseName, '库名');
     validateIdentifier(row.tableName, '表名');
     const rowIndex = String(index + 1);
@@ -1778,52 +2403,147 @@ function queryCountsDirect(rows) {
       `FROM ${row.databaseName}.${row.tableName}`
     ].join(' ');
   });
-
-  const sqlPath = path.join(generatedDir, `count-direct-${Date.now()}.sql`);
-  fs.writeFileSync(sqlPath, `${statements.join(';\n')};\n`);
-  const output = runBeeline(['-f', sqlPath]);
-  return {
-    sqlPath,
-    summary: parseDirectCountOutput(output, rows, partitionedTables)
-  };
 }
 
-async function queryCounts(job, configPath) {
+async function executeCountBatchAsync(job, rows, partitionedTables, label) {
+  const statements = buildCountSqlStatements(rows, partitionedTables);
+  const sqlPath = writeGeneratedSqlFile('count-direct', statements);
+  job.logs.push(`${label}，${rows.length} 张表：${sqlPath}`);
+  sendJob(job);
+
+  try {
+    const output = await runBeelineAsync(['-f', sqlPath], { job });
+    return {
+      sqlPaths: [sqlPath],
+      summary: parseDirectCountOutput(output, rows, partitionedTables)
+    };
+  } catch (error) {
+    if (rows.length === 1) {
+      const row = rows[0];
+      const failure = {
+        row,
+        error: error.message,
+        sqlPath
+      };
+      job.logs.push(`${label}单表失败，已跳过：${row.databaseName}.${row.tableName}（${sqlPath}）：${error.message}`);
+      sendJob(job);
+      return {
+        sqlPaths: [sqlPath],
+        summary: makeSkippedSummaryItems(row, error.message, 0),
+        failures: [failure]
+      };
+    }
+
+    const middle = Math.ceil(rows.length / 2);
+    job.logs.push(`${label}执行失败，正在拆分为 ${middle} 张和 ${rows.length - middle} 张表重试。`);
+    sendJob(job);
+    const left = await executeCountBatchAsync(job, rows.slice(0, middle), partitionedTables, `${label}左半批`);
+    const right = await executeCountBatchAsync(job, rows.slice(middle), partitionedTables, `${label}右半批`);
+    return {
+      sqlPaths: [...left.sqlPaths, ...right.sqlPaths],
+      summary: [...left.summary, ...right.summary],
+      failures: [...(left.failures || []), ...(right.failures || [])]
+    };
+  }
+}
+
+function createCountProgressHeartbeat(job, label, options = {}) {
+  const intervalMs = options.intervalMs || 10000;
+  const minProgress = options.minProgress || 35;
+  const maxProgress = options.maxProgress || 78;
+  const step = options.step || 2;
+  let tick = 0;
+  return setInterval(() => {
+    if (job.cancelRequested || job.countStatus !== 'running') return;
+    tick += 1;
+    const nextProgress = Math.min(maxProgress, Math.max(job.countProgress || 0, minProgress) + step);
+    job.countProgress = nextProgress;
+    job.countText = label;
+    job.logs.push(`${label}，已持续 ${Math.round((tick * intervalMs) / 1000)} 秒，请等待 Hive 查询返回。`);
+    sendJob(job);
+  }, intervalMs);
+}
+
+async function queryCountsDirectAsync(job) {
+  const rows = job.countRows || job.rows;
+  const heartbeat = createCountProgressHeartbeat(job, '数据量查询执行中', {
+    minProgress: 25,
+    maxProgress: 78
+  });
+  try {
+    const partitionedTables = await queryPartitionedTablesAsync(rows, job);
+    const batches = getCountQueryBatches(rows);
+    const summaries = [];
+    const sqlPaths = [];
+    const failures = [];
+    const batchResults = await executeCountBatchesWithConcurrency(job, batches, partitionedTables);
+    for (const batchResult of batchResults) {
+      sqlPaths.push(...batchResult.sqlPaths);
+      summaries.push(...batchResult.summary);
+      failures.push(...(batchResult.failures || []));
+      if (batchResult.failures?.length) {
+        job.countSkipped = (job.countSkipped || 0) + batchResult.failures.length;
+        job.logs.push(`批次已跳过 ${batchResult.failures.length} 张异常表，其他表继续完成。`);
+        sendJob(job);
+      }
+    }
+    return {
+      sqlPath: sqlPaths[0] || '',
+      batchCount: sqlPaths.length,
+      summary: summaries,
+      failures
+    };
+  } finally {
+    clearInterval(heartbeat);
+  }
+}
+
+async function queryCounts(job, configPath, options = {}) {
+  const queryRows = options.rows || job.rows;
+  const startText = options.startText || '数据恢复已完成，开始数据量回查。';
+  const nodeText = options.nodeText || '正在通过 Node 后端批量查询表和日期分区数据量。';
+  const nodeDoneText = options.nodeDoneText || '数据量查询完成，正在生成 Excel 明细。';
+  const dryRunText = options.dryRunText || 'dry-run 正在模拟生成分区数据量明细。';
+  const dryRunDoneText = options.dryRunDoneText || '模拟数据量明细已生成，正在写入 Excel。';
+  const completedText = options.completedText || '数据量回查完成，完整明细已生成。';
+  const failedText = options.failedText || '数据量回查失败，请查看执行日志。';
+
+  setCountProgress(job, 'running', Math.max(job.countProgress || 0, 5), startText);
   if (isExecutionEnabled()) {
     try {
-      const result = queryCountsDirect(job.rows);
+      setCountProgress(job, 'running', Math.max(job.countProgress || 0, 25), nodeText);
+      const result = await queryCountsDirectAsync(job);
+      setCountProgress(job, 'running', 82, nodeDoneText);
       job.summary = result.summary;
+      job.countFailures = result.failures || [];
+      job.countSkipped = job.countFailures.length;
       writeCountSummaryWorkbook(job);
-      job.logs.push(`Node 后端数据量批量回查完成：${result.sqlPath}`);
+      if (job.countSkipped) {
+        job.logs.push(`Node 后端数据量批量回查完成：共 ${result.batchCount || 1} 个 SQL 批次文件，已跳过 ${job.countSkipped} 张异常表。`);
+        setCountProgress(job, 'completed', 100, `数据量查询完成，已跳过 ${job.countSkipped} 张异常表，Excel 明细已生成。`);
+      } else {
+        job.logs.push(`Node 后端数据量批量回查完成：共 ${result.batchCount || 1} 个 SQL 批次文件，首个文件 ${result.sqlPath}`);
+        setCountProgress(job, 'completed', 100, completedText);
+      }
       return true;
     } catch (error) {
       job.logs.push(`Node 后端数据量回查失败：${error.message}`);
-      if (fs.existsSync(path.join(scriptDir, 'count_table_rows.sh'))) {
-        try {
-          const outputPath = path.join(generatedDir, `count-result-${job.id}.txt`);
-          runScriptSync('count_table_rows.sh', [configPath, outputPath]);
-          job.summary = parseCountScriptOutput(outputPath, job.rows);
-          writeCountSummaryWorkbook(job);
-          job.logs.push(`shell 备用数据量回查完成：${outputPath}`);
-          return true;
-        } catch (fallbackError) {
-          job.summary = [];
-          job.logs.push(`shell 备用数据量回查失败：${fallbackError.message}`);
-          return false;
-        }
-      }
       job.summary = [];
+      setCountProgress(job, 'failed', 100, failedText);
       return false;
     }
   }
 
-  job.summary = job.rows.flatMap((row, index) => {
+  setCountProgress(job, 'running', 35, dryRunText);
+  job.summary = queryRows.flatMap((row, index) => {
     const dates = enumerateDates(row.startDate, row.endDate);
     if (!dates.length) return [makeSummaryItem(row, 'ALL', fallbackCount(row), index)];
     return dates.map((statDate, dateIndex) => makeSummaryItem(row, statDate, fallbackCountForDate(row, statDate), `${index}-${dateIndex}`));
   });
+  setCountProgress(job, 'running', 82, dryRunDoneText);
   writeCountSummaryWorkbook(job);
   job.logs.push('dry-run 使用 Node 后端模拟分区数据量明细。');
+  setCountProgress(job, 'completed', 100, completedText);
   return true;
 }
 
@@ -1832,7 +2552,9 @@ async function runJob(job, restoreMode, options) {
   if (restoreMode === 'cross') {
     job.rows = effectiveCrossRows(job.rows, options.targetDatabase);
   }
-  const configPath = writeTaskConfig(job.rows, restoreMode, {
+  job.restoreRows = job.rows.filter((row) => row.status !== 'failed');
+  job.shellRows = job.restoreRows;
+  const configPath = writeTaskConfig(job.restoreRows, restoreMode, {
     targetDatabase: restoreMode === 'cross' ? options.targetDatabase : '',
     preferRowDatabase: restoreMode === 'cross'
   });
@@ -1844,18 +2566,27 @@ async function runJob(job, restoreMode, options) {
   job.logs.push(dryRun ? getDryRunReason(restoreMode) : '已开启真实 Node 后端执行，shell 脚本仅作为失败兜底。');
   sendJob(job);
 
-  for (const row of job.rows) {
-    row.status = 'running';
-    row.statusText = statusText.running;
-    row.progress = 8;
+  for (const row of job.restoreRows) {
+    row.status = 'pending';
+    row.statusText = statusText.pending;
+    row.progress = 0;
   }
   sendJob(job);
 
   try {
-    if (dryRun) {
-      for (const row of job.rows) {
+    if (!job.restoreRows.length) {
+      job.logs.push('没有通过清单校验的恢复任务，已跳过数据恢复。');
+      sendJob(job);
+    } else if (dryRun) {
+      for (const row of job.restoreRows) {
+        await jobCheckpoint(job);
+        row.status = 'running';
+        row.statusText = statusText.running;
+        row.progress = 8;
+        sendJob(job);
         job.logs.push(`模拟恢复 ${row.databaseName}.${row.tableName} ${row.startDate} 至 ${row.endDate}`);
         for (const progress of [24, 46, 68, 88]) {
+          await jobCheckpoint(job);
           await sleep(260);
           row.progress = progress;
           sendJob(job);
@@ -1864,16 +2595,36 @@ async function runJob(job, restoreMode, options) {
     } else {
       await executeRestoreNativeWithShellFallback(job, restoreMode, configPath, options);
     }
-    for (const row of job.rows) {
+    for (const row of job.restoreRows) {
       if (row.status !== 'failed') {
-      row.progress = 100;
-      row.status = 'completed';
-      row.statusText = statusText.completed;
+        row.progress = 100;
+        row.status = 'completed';
+        row.statusText = statusText.completed;
       }
     }
-    const countSucceeded = await queryCounts(job, configPath);
+    sendJob(job);
+    await jobCheckpoint(job);
+    const recoverableRows = job.rows.filter((row) => row.status === 'completed');
+    let countSucceeded = true;
+    if (recoverableRows.length) {
+      job.countRows = recoverableRows;
+      try {
+        countSucceeded = await queryCounts(job, configPath, { rows: recoverableRows });
+      } finally {
+        delete job.countRows;
+      }
+    } else {
+      job.logs.push('没有成功完成的恢复任务，已跳过数据量回查。');
+      sendJob(job);
+    }
     job.logs.push(countSucceeded ? '恢复执行完成，数据量已回查。' : '恢复执行完成，数据量回查失败，请查看日志。');
   } catch (error) {
+    if (error.code === 'JOB_CANCELED') {
+      markJobCanceled(job);
+      job.logs.push('恢复任务已终止。');
+      sendJob(job);
+      return;
+    }
     job.status = 'failed';
     job.logs.push(`恢复执行失败：${error.message}`);
     for (const row of job.rows) {
@@ -1970,11 +2721,62 @@ async function runPackageJob(job, options) {
   sendJob(job);
 }
 
+async function runCountQueryJob(job, queryMode) {
+  try {
+    job.logs.push(queryMode === 'view-count' ? '开始视图数据量查询，先解析视图源表。' : '开始贴源表数据量查询。');
+    sendJob(job);
+
+    setCountProgress(job, 'running', 3, queryMode === 'view-count' ? '正在准备解析视图源表。' : '正在准备数据量查询。');
+    const result = await buildCountQueryRowsAsync(job.rows, queryMode, job);
+    job.rows = result.rows.map((row) => makeRow({
+      ...row,
+      status: 'running',
+      statusText: '数据量查询中',
+      progress: 20
+    }));
+    job.configPath = result.configPath;
+    if (result.fallbackReason) job.logs.push(result.fallbackReason);
+    job.logs.push(`数据量查询配置文件：${result.configPath}`);
+    sendJob(job);
+
+    const succeeded = await queryCounts(job, result.configPath, {
+      startText: '开始数据量查询。',
+      nodeText: '正在通过 Node 后端查询表和日期分区数据量。',
+      completedText: '数据量查询完成，Excel 明细已生成。',
+      failedText: '数据量查询失败，请查看执行日志。'
+    });
+
+    const skippedRowIds = new Set((job.countFailures || []).map((failure) => failure.row?.id));
+    for (const row of job.rows) {
+      row.progress = 100;
+      if (skippedRowIds.has(row.id)) {
+        row.status = 'failed';
+        row.statusText = '查询失败（已跳过）';
+      } else {
+        row.status = succeeded ? 'completed' : 'failed';
+        row.statusText = succeeded ? statusText.completed : statusText.failed;
+      }
+    }
+    job.status = succeeded ? 'completed' : 'failed';
+    job.logs.push(succeeded ? '全部数据量查询任务完成。' : '数据量查询任务结束，存在失败。');
+  } catch (error) {
+    job.status = 'failed';
+    job.logs.push(`数据量查询失败：${error.message}`);
+    setCountProgress(job, 'failed', 100, '数据量查询失败，请查看执行日志。');
+    for (const row of job.rows) {
+      row.status = 'failed';
+      row.statusText = statusText.failed;
+    }
+  }
+  sendJob(job);
+}
+
 async function handleParse(req, res) {
   try {
     const body = await readBody(req);
     const { fields, files } = parseMultipart(body, req.headers['content-type']);
     const { rows, configPath, viewInputPath, fallbackReason } = buildRows(fields, files.file);
+    const invalidRows = rows.filter((row) => row.status === 'failed');
     sendJson(res, 200, {
       rows,
       meta: {
@@ -1983,12 +2785,15 @@ async function handleParse(req, res) {
         ...getExecutionMeta()
       },
       logs: [
-        `已读取 ${rows.length} 个${fields.mode === 'package' ? '打包对象' : '恢复对象'}。`,
+        `已读取 ${rows.length} 个${fields.mode === 'package' ? '打包对象' : fields.mode === 'count' ? '查询对象' : '恢复对象'}。`,
+        ...(invalidRows.length ? [`其中 ${invalidRows.length} 行清单校验失败，后续恢复和数据回查将自动跳过这些行。`] : []),
         fields.mode === 'view'
           ? '已根据视图名解析源表并生成恢复配置。'
           : fields.mode === 'package'
             ? '已生成数据文件打包配置。'
-            : '已生成恢复配置。',
+            : fields.mode === 'count'
+              ? '已生成数据量查询清单，请选择查询方式。'
+              : '已生成恢复配置。',
         ...(fallbackReason ? [fallbackReason] : [])
       ]
     });
@@ -2001,26 +2806,19 @@ async function handleRestore(req, res) {
   try {
     const payload = JSON.parse((await readBody(req)).toString('utf8') || '{}');
     if (!Array.isArray(payload.rows) || !payload.rows.length) throw new Error('没有可恢复的行');
+    const validRows = payload.rows.filter((row) => row.status !== 'failed');
     if (payload.restoreMode === 'cross') {
-      const missingTargetDatabaseRows = payload.rows.filter((row) => !row.databaseName);
+      const missingTargetDatabaseRows = validRows.filter((row) => !row.databaseName);
       if (missingTargetDatabaseRows.length && !payload.targetDatabase) {
         throw new Error('跨库数据恢复中存在未填写库名的行，请在清单库名列补充目标库，或填写页面跨库目标库作为统一兜底');
       }
-    } else if (payload.rows.some((row) => !row.databaseName)) {
+    } else if (validRows.some((row) => !row.databaseName)) {
       throw new Error('连续时间段恢复和单日期恢复要求清单中每行必须包含库名');
     }
 
-    const jobId = `job-${Date.now()}`;
-    const job = {
-      id: jobId,
-      status: 'running',
-      rows: payload.rows.map((row) => makeRow({ ...row, progress: 0, status: 'pending' })),
-      logs: [],
-      summary: [],
-      subscribers: new Set()
-    };
-    jobs.set(jobId, job);
-    sendJson(res, 200, { jobId });
+    const job = createJob(payload.rows);
+    jobs.set(job.id, job);
+    sendJson(res, 200, { jobId: job.id });
     const sourcePathConfig = resolveSourceRoot(payload.sourceType);
     runJob(job, payload.restoreMode, {
       targetDatabase: payload.targetDatabase,
@@ -2050,20 +2848,35 @@ async function handlePackage(req, res) {
       throw new Error('数据文件打包缺少本地拷贝目录配置，请设置 DATA_PACKAGE_ROOT 或 config/recovery.local.json 的 packageRoot');
     }
 
-    const jobId = `job-${Date.now()}`;
-    const job = {
-      id: jobId,
-      status: 'running',
-      rows: payload.rows.map((row) => makeRow({ ...row, progress: 0, status: 'pending' })),
-      logs: [],
-      summary: [],
-      subscribers: new Set()
-    };
-    jobs.set(jobId, job);
-    sendJson(res, 200, { jobId });
+    const job = createJob(payload.rows);
+    jobs.set(job.id, job);
+    sendJson(res, 200, { jobId: job.id });
     runPackageJob(job, {
       packageRoot: localPathConfig.packageRoot
     });
+  } catch (error) {
+    sendJson(res, 400, { error: error.message });
+  }
+}
+
+async function handleCountQuery(req, res) {
+  try {
+    const payload = JSON.parse((await readBody(req)).toString('utf8') || '{}');
+    if (!Array.isArray(payload.rows) || !payload.rows.length) throw new Error('没有可查询的行');
+    if (!['view-count', 'source-count'].includes(payload.queryMode)) throw new Error('请选择数据量查询方式');
+    if (payload.rows.some((row) => !row.tableName || !row.startDate || !row.endDate)) {
+      throw new Error('数据量查询要求每行必须包含表名、开始日期和结束日期');
+    }
+    if (payload.queryMode === 'source-count' && payload.rows.some((row) => !row.databaseName)) {
+      throw new Error('贴源表数据量查询要求每行必须包含库名');
+    }
+
+    const job = createJob(payload.rows);
+    jobs.set(job.id, job);
+    sendJson(res, 200, { jobId: job.id });
+    setTimeout(() => {
+      runCountQueryJob(job, payload.queryMode);
+    }, 50);
   } catch (error) {
     sendJson(res, 400, { error: error.message });
   }
@@ -2089,6 +2902,45 @@ function handleCountSummaryDownload(req, res, jobId) {
     'Content-Disposition': "attachment; filename=\"count-summary.xlsx\"; filename*=UTF-8''%E6%95%B0%E6%8D%AE%E9%87%8F%E5%9B%9E%E6%9F%A5%E6%98%8E%E7%BB%86.xlsx",
     'Cache-Control': 'no-store'
   });
+}
+
+function handleJobControl(req, res, jobId, action) {
+  const job = jobs.get(jobId);
+  if (!job) return sendJson(res, 404, { error: '任务不存在或已过期' });
+  if (job.status === 'completed' || job.status === 'failed' || job.status === 'canceled') {
+    return sendJson(res, 400, { error: '任务已结束，不能继续操作' });
+  }
+
+  if (action === 'pause') {
+    job.paused = true;
+    markRowsPaused(job);
+    for (const child of getJobChildren(job)) signalChildProcess(child, 'SIGSTOP');
+    job.logs.push('用户已暂停当前任务。');
+    sendJob(job);
+    return sendJson(res, 200, { ok: true, paused: true });
+  }
+
+  if (action === 'resume') {
+    job.paused = false;
+    markRowsResumed(job);
+    for (const child of getJobChildren(job)) signalChildProcess(child, 'SIGCONT');
+    job.logs.push('用户已继续当前任务。');
+    sendJob(job);
+    return sendJson(res, 200, { ok: true, paused: false });
+  }
+
+  if (action === 'cancel') {
+    markJobCanceled(job);
+    for (const child of getJobChildren(job)) {
+      signalChildProcess(child, 'SIGTERM');
+      signalChildProcess(child, 'SIGCONT');
+    }
+    job.logs.push('用户已终止当前任务。');
+    sendJob(job);
+    return sendJson(res, 200, { ok: true, canceled: true });
+  }
+
+  return sendJson(res, 400, { error: '未知任务操作' });
 }
 
 function handleEvents(req, res, jobId) {
@@ -2122,6 +2974,11 @@ const server = http.createServer(async (req, res) => {
   if (req.method === 'POST' && url.pathname === '/api/parse') return handleParse(req, res);
   if (req.method === 'POST' && url.pathname === '/api/restore') return handleRestore(req, res);
   if (req.method === 'POST' && url.pathname === '/api/package') return handlePackage(req, res);
+  if (req.method === 'POST' && url.pathname === '/api/count-query') return handleCountQuery(req, res);
+  if (req.method === 'POST' && /^\/api\/jobs\/[^/]+\/(pause|resume|cancel)$/.test(url.pathname)) {
+    const [, , , jobId, action] = url.pathname.split('/');
+    return handleJobControl(req, res, jobId, action);
+  }
   if (req.method === 'GET' && /^\/api\/jobs\/[^/]+\/events$/.test(url.pathname)) {
     return handleEvents(req, res, url.pathname.split('/')[3]);
   }
