@@ -149,6 +149,14 @@ cp config/recovery.local.example.json config/recovery.local.json
 - `stageRoot`：连续时间段恢复使用的本地中转目录。
 - `packageRoot`：数据文件打包使用的本地拷贝目录，后端执行 `hdfs dfs -get` 时写入该目录。
 
+分区表本地恢复源目录按以下格式组织：
+
+```text
+<sourceRoot>/<YYYY-MM-DD>/<表名>/<PARTITION_COLUMN>=<YYYY-MM-DD>/
+```
+
+例如 `PARTITION_COLUMN=dt` 时，目录应为 `sourceRoot/2026-05-31/orders/dt=2026-05-31/`。本地目录、HDFS 分区路径、Hive 分区修复和数据量查询统一使用该配置。
+
 也可以用环境变量覆盖：
 
 ```bash
@@ -178,6 +186,9 @@ RECOVERY_UNMASKED_SOURCE_ROOT=/data/recovery/source/unmasked
 RECOVERY_NON_PARTITION_SOURCE_ROOT=/data/recovery/source/non-partition
 RECOVERY_STAGE_ROOT=/data/recovery/stage
 DATA_PACKAGE_ROOT=/data/recovery/package
+RECOVERY_TABLE_CONCURRENCY=2
+PARTITION_REPAIR_MODE=add
+HDFS_PUT_RETRY_COUNT=3
 
 INCP_IP=<HiveServer2地址>
 INCP_USER=<Hive用户>
@@ -188,14 +199,19 @@ KRB_PRINCIPAL=ekg@TDH
 PARTITION_COLUMN=tx_dt
 SOURCE_DATABASE=prodb_dm
 TABLE_LOCATION_COLUMN=table_location
+CROSS_TABLE_CONCURRENCY=2
+CROSS_REPAIR_MODE=add
 HIVE_METADATA_BATCH_SIZE=200
 HIVE_COUNT_BATCH_SIZE=200
 HIVE_COUNT_CONCURRENCY=4
+VIEW_SOURCE_QUERY_CONCURRENCY=4
 ```
+
+`PARTITION_COLUMN` 是分区字段名，默认值为 `tx_dt`。如果表使用 `dt` 等其他日期分区字段，需要同步修改为实际字段名，并按该字段创建本地分区目录。
 
 `RECOVERY_EXECUTE=1` 才会真实执行恢复。未设置时是 dry-run，适合页面联调。页面开始恢复前会选择“脱敏数据恢复”或“未脱敏数据恢复”，后端分别映射到 `RECOVERY_MASKED_SOURCE_ROOT` 和 `RECOVERY_UNMASKED_SOURCE_ROOT`。
 
-真实执行时优先使用 Node 后端内置逻辑完成视图解析、连续恢复、单日期恢复、跨库恢复、数据文件打包和数据量回查。恢复执行失败时可调用 `scripts/` 下的 shell 脚本作为备用方案；数据量查询只使用 Node 后端。大量表的 Hive 元数据查询会按 `HIVE_METADATA_BATCH_SIZE` 分批写入 SQL 文件执行，数据量统计会按 `HIVE_COUNT_BATCH_SIZE` 分批执行，默认每批 200 张表，并按 `HIVE_COUNT_CONCURRENCY` 默认 4 路受控并发执行。生产环境如出现 HiveServer2 或 YARN 资源竞争，可将并发调低到 2。
+真实执行时优先使用 Node 后端内置逻辑完成视图解析、连续恢复、单日期恢复、跨库恢复、数据文件打包和数据量回查。连续时间段恢复和单日期恢复按 `RECOVERY_TABLE_CONCURRENCY` 默认 2 路执行不同目标表，同一目标表仍串行处理；分区上传优先一次提交多个分区，HDFS 写入遇到租约异常时按 `HDFS_PUT_RETRY_COUNT` 默认 3 次重试。`PARTITION_REPAIR_MODE=add` 时只为本次恢复的分区补充元数据，兼容性异常时自动回退 `MSCK REPAIR`；如内网 Hive 只支持全表修复，可设置为 `msck`。跨库恢复会批量检查源分区、一次复制多个分区，并按 `CROSS_TABLE_CONCURRENCY` 默认 2 路执行不同目标表。恢复执行失败时可调用 `scripts/` 下的 shell 脚本作为备用方案；数据量查询只使用 Node 后端。大量表的 Hive 元数据查询会按 `HIVE_METADATA_BATCH_SIZE` 分批写入 SQL 文件执行，数据量统计会按 `HIVE_COUNT_BATCH_SIZE` 分批执行，默认每批 200 张表，并按 `HIVE_COUNT_CONCURRENCY` 默认 4 路受控并发执行。视图源表查询按 `VIEW_SOURCE_QUERY_CONCURRENCY` 默认 4 路并发解析，并缓存重复的嵌套视图结果。生产环境如出现 HiveServer2 或 YARN 资源竞争，可将并发调低到 2。
 
 首页“恢复模版下载”按钮会下载 `/api/templates/recovery.xlsx`，模板包含视图恢复、源表恢复和数据文件打包所需表头。
 

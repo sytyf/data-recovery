@@ -346,6 +346,10 @@ svg {
   grid-template-columns: 1fr;
 }
 
+.action-strip.single {
+  grid-template-columns: 1fr;
+}
+
 .source-selector {
   align-items: center;
   background: #ffffff;
@@ -581,6 +585,44 @@ td:nth-child(7) {
 th:nth-child(8),
 td:nth-child(8) {
   width: 21%;
+}
+
+.view-source-table th:nth-child(1),
+.view-source-table td:nth-child(1) {
+  width: 6%;
+}
+
+.view-source-table th:nth-child(2),
+.view-source-table td:nth-child(2) {
+  width: 15%;
+}
+
+.view-source-table th:nth-child(3),
+.view-source-table td:nth-child(3) {
+  width: 30%;
+}
+
+.view-source-table th:nth-child(4),
+.view-source-table td:nth-child(4),
+.view-source-table th:nth-child(5),
+.view-source-table td:nth-child(5) {
+  width: 11%;
+}
+
+.view-source-table th:nth-child(6),
+.view-source-table td:nth-child(6) {
+  width: 12%;
+}
+
+.view-source-table th:nth-child(7),
+.view-source-table td:nth-child(7) {
+  width: 15%;
+}
+
+.view-source-table .source-tables-cell {
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+  white-space: normal;
 }
 
 .empty {

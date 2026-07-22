@@ -31,14 +31,32 @@ PARTITION_COLUMN="${PARTITION_COLUMN:-tx_dt}"
 
 declare -a HDFS_CMD=()
 
+# 方法说明：执行 log 函数，完成对应脚本处理。
+
+# 参数说明：$@ 为位置参数。
+
+# 返回说明：通过退出码表示执行成功或失败。
+
 log() {
     printf '[%s] %s\n' "$(date '+%F %T')" "$*"
 }
+
+# 方法说明：执行 die 函数，完成对应脚本处理。
+
+# 参数说明：$@ 为位置参数。
+
+# 返回说明：通过退出码表示执行成功或失败。
 
 die() {
     log "错误：$*" >&2
     exit 1
 }
+
+# 方法说明：执行 on_error 函数，完成对应脚本处理。
+
+# 参数说明：无显式位置参数。
+
+# 返回说明：通过退出码表示执行成功或失败。
 
 on_error() {
     local exit_code=$?
@@ -47,6 +65,12 @@ on_error() {
 }
 trap on_error ERR
 
+# 方法说明：执行 trim 函数，完成对应脚本处理。
+
+# 参数说明：$1 为位置参数。
+
+# 返回说明：通过退出码表示执行成功或失败。
+
 trim() {
     local value=$1
     value="${value#"${value%%[![:space:]]*}"}"
@@ -54,9 +78,21 @@ trim() {
     printf '%s' "$value"
 }
 
+# 方法说明：执行 require_command 函数，完成对应脚本处理。
+
+# 参数说明：$1 为位置参数。
+
+# 返回说明：通过退出码表示执行成功或失败。
+
 require_command() {
     command -v "$1" >/dev/null 2>&1 || die "未找到命令：$1"
 }
+
+# 方法说明：执行 setup_hdfs_command 函数，完成对应脚本处理。
+
+# 参数说明：无显式位置参数。
+
+# 返回说明：通过退出码表示执行成功或失败。
 
 setup_hdfs_command() {
     if command -v hdfs >/dev/null 2>&1; then
@@ -68,12 +104,24 @@ setup_hdfs_command() {
     fi
 }
 
+# 方法说明：执行 validate_identifier 函数，完成对应脚本处理。
+
+# 参数说明：$1 为位置参数；$2 为位置参数。
+
+# 返回说明：通过退出码表示执行成功或失败。
+
 validate_identifier() {
     local value=$1
     local label=$2
     [[ "$value" =~ ^[a-z_][a-z0-9_]*$ ]] ||
         die "${label}不合法：${value}；只允许字母、数字和下划线，且不能以数字开头"
 }
+
+# 方法说明：执行 validate_date 函数，完成对应脚本处理。
+
+# 参数说明：$1 为位置参数。
+
+# 返回说明：通过退出码表示执行成功或失败。
 
 validate_date() {
     local value=$1
@@ -85,6 +133,12 @@ validate_date() {
         die "日期不存在：${value}"
     [[ "$parsed" == "$value" ]] || die "日期不存在：${value}"
 }
+
+# 方法说明：执行 normalize_date 函数，完成对应脚本处理。
+
+# 参数说明：$1 为位置参数。
+
+# 返回说明：通过退出码表示执行成功或失败。
 
 normalize_date() {
     local input=$1
@@ -108,6 +162,12 @@ normalize_date() {
     printf '%s' "$normalized"
 }
 
+# 方法说明：执行 parse_config_line 函数，完成对应脚本处理。
+
+# 参数说明：$1 为位置参数。
+
+# 返回说明：通过退出码表示执行成功或失败。
+
 parse_config_line() {
     local line=$1
 
@@ -122,6 +182,12 @@ parse_config_line() {
     extra=$(trim "${extra:-}")
 }
 
+# 方法说明：执行 beeline_run 函数，完成对应脚本处理。
+
+# 参数说明：$1 为位置参数。
+
+# 返回说明：通过退出码表示执行成功或失败。
+
 beeline_run() {
     local sql=$1
     local -a args=(
@@ -134,6 +200,12 @@ beeline_run() {
     [[ -z "$INCP_PASSWD" ]] || args+=(-p "$INCP_PASSWD")
     beeline "${args[@]}" -e "$sql"
 }
+
+# 方法说明：执行 query_scalar 函数，完成对应脚本处理。
+
+# 参数说明：$1 为位置参数。
+
+# 返回说明：通过退出码表示执行成功或失败。
 
 query_scalar() {
     local output
@@ -148,6 +220,12 @@ query_scalar() {
         }
     }' <<< "$output"
 }
+
+# 方法说明：执行 validate_hdfs_table_path 函数，完成对应脚本处理。
+
+# 参数说明：$1 为位置参数。
+
+# 返回说明：通过退出码表示执行成功或失败。
 
 validate_hdfs_table_path() {
     local path=$1
@@ -164,6 +242,12 @@ validate_hdfs_table_path() {
         die "拒绝操作危险的 HDFS 表路径：${path}"
 }
 
+# 方法说明：执行 get_table_location 函数，完成对应脚本处理。
+
+# 参数说明：$1 为位置参数；$2 为位置参数。
+
+# 返回说明：通过退出码表示执行成功或失败。
+
 get_table_location() {
     local database_name=$1
     local table_name=$2
@@ -175,6 +259,12 @@ get_table_location() {
     validate_hdfs_table_path "$table_path"
     printf '%s' "$table_path"
 }
+
+# 方法说明：执行 ensure_partitioned_table 函数，完成对应脚本处理。
+
+# 参数说明：$1 为位置参数；$2 为位置参数。
+
+# 返回说明：通过退出码表示执行成功或失败。
 
 ensure_partitioned_table() {
     local database_name=$1
@@ -199,10 +289,39 @@ ensure_partitioned_table() {
     die "${database_name}.${table_name} 不是分区表，无法按 ${PARTITION_COLUMN} 日期范围复制"
 }
 
+# 方法说明：执行 hdfs_test_dir 函数，完成对应脚本处理。
+
+# 参数说明：$1 为位置参数。
+
+# 返回说明：通过退出码表示执行成功或失败。
+
 hdfs_test_dir() {
     local path=$1
     "${HDFS_CMD[@]}" -test -d "$path"
 }
+
+# 方法说明：执行 list_hdfs_partition_dirs 函数，完成对应脚本处理。
+
+# 参数说明：$1 为位置参数。
+
+# 返回说明：通过退出码表示执行成功或失败。
+
+list_hdfs_partition_dirs() {
+    local table_path=$1
+    "${HDFS_CMD[@]}" -ls -d "${table_path%/}/${PARTITION_COLUMN}=*" |
+        awk -v column="$PARTITION_COLUMN" '{
+            path=$NF;
+            partition=path;
+            sub(/^.*\//, "", partition);
+            if (partition ~ ("^" column "=[0-9]{4}-[0-9]{2}-[0-9]{2}$")) print path;
+        }'
+}
+
+# 方法说明：执行 copy_partition_contents 函数，完成对应脚本处理。
+
+# 参数说明：$1 为位置参数；$2 为位置参数。
+
+# 返回说明：通过退出码表示执行成功或失败。
 
 copy_partition_contents() {
     local source_partition=$1
@@ -212,15 +331,52 @@ copy_partition_contents() {
     "${HDFS_CMD[@]}" -cp "${source_partition%/}/*" "${target_partition%/}/"
 }
 
+# 方法说明：执行 repair_partitions 函数，完成对应脚本处理。
+
+# 参数说明：$1 为位置参数；$2 为位置参数；$@ 为位置参数。
+
+# 返回说明：通过退出码表示执行成功或失败。
+
+repair_partitions() {
+    local target_database=$1
+    local table_name=$2
+    shift 2
+    local partition_path partition_date clauses=""
+
+    if [[ "${CROSS_REPAIR_MODE:-add}" == "msck" ]]; then
+        beeline_run "USE ${target_database};MSCK REPAIR TABLE ${table_name}"
+        return
+    fi
+
+    for partition_path in "$@"; do
+        partition_date=${partition_path##*=}
+        clauses+=" PARTITION (${PARTITION_COLUMN}='${partition_date}') LOCATION '${partition_path}'"
+    done
+
+    if ! beeline_run "USE ${target_database};ALTER TABLE ${table_name} ADD IF NOT EXISTS${clauses}"; then
+        log "批量补充分区元数据失败，回退 MSCK REPAIR：${target_database}.${table_name}"
+        beeline_run "USE ${target_database};MSCK REPAIR TABLE ${table_name}"
+    fi
+}
+
+# 方法说明：执行 process_task 函数，完成对应脚本处理。
+
+# 参数说明：$1 为位置参数；$2 为位置参数；$3 为位置参数；$4 为位置参数。
+
+# 返回说明：通过退出码表示执行成功或失败。
+
 process_task() {
     local target_database=$1
     local table_name=$2
     local start_date=$3
     local end_date=$4
     local source_table_path target_table_path current_date
-    local source_partition target_partition
+    local source_partition target_partition listed_partitions
+    local batch_listed=0
     local -a source_partitions=()
     local -a target_partitions=()
+    local -a requested_target_partitions=()
+    declare -A available_dates=()
 
     validate_identifier "$SOURCE_DATABASE" "源库名"
     validate_identifier "$PARTITION_COLUMN" "分区字段名"
@@ -243,12 +399,46 @@ process_task() {
     [[ "$source_table_path" != "$target_table_path" ]] ||
         die "源表和目标表 HDFS 路径相同，拒绝执行：${source_table_path}"
 
+    if listed_partitions=$(list_hdfs_partition_dirs "$source_table_path"); then
+        batch_listed=1
+        while IFS= read -r source_partition; do
+            [[ -n "$source_partition" ]] || continue
+            available_dates["${source_partition##*=}"]=1
+        done <<< "$listed_partitions"
+        local listed_date_in_range=0
+        current_date=$start_date
+        while :; do
+            if [[ -n "${available_dates[$current_date]:-}" ]]; then
+                listed_date_in_range=1
+                break
+            fi
+            [[ "$current_date" == "$end_date" ]] && break
+            current_date=$(date -d "${current_date} + 1 day" '+%F')
+        done
+        if (( listed_date_in_range == 1 )); then
+            log "批量检查源分区完成，可用分区数：${#available_dates[@]}"
+        else
+            batch_listed=0
+            log "批量分区列表未命中日期范围，回退逐日期检查：${source_table_path}"
+        fi
+    else
+        log "批量检查源分区失败，回退逐日期检查：${source_table_path}"
+    fi
+
     current_date=$start_date
     while :; do
         source_partition="${source_table_path%/}/${PARTITION_COLUMN}=${current_date}"
         target_partition="${target_table_path%/}/${PARTITION_COLUMN}=${current_date}"
+        requested_target_partitions+=("$target_partition")
 
-        if hdfs_test_dir "$source_partition"; then
+        if (( batch_listed == 1 )); then
+            if [[ -n "${available_dates[$current_date]:-}" ]]; then
+                source_partitions+=("$source_partition")
+                target_partitions+=("$target_partition")
+            else
+                log "警告：源分区目录不存在，跳过日期 ${current_date}：${source_partition}"
+            fi
+        elif hdfs_test_dir "$source_partition"; then
             source_partitions+=("$source_partition")
             target_partitions+=("$target_partition")
         else
@@ -260,25 +450,35 @@ process_task() {
     done
 
     if (( ${#source_partitions[@]} == 0 )); then
-        log "警告：${SOURCE_DATABASE}.${table_name} 在指定日期范围内没有可复制的源分区，跳过"
+        log "警告：${SOURCE_DATABASE}.${table_name} 在指定日期范围内没有可复制的源分区，清理目标日期范围内的旧分区"
+        "${HDFS_CMD[@]}" -rm -r -f "${requested_target_partitions[@]}"
         return
     fi
 
-    log "删除 ${#target_partitions[@]} 个目标 HDFS 分区目录"
-    "${HDFS_CMD[@]}" -rm -r -f "${target_partitions[@]}"
+    log "删除 ${#requested_target_partitions[@]} 个目标日期范围旧分区目录"
+    "${HDFS_CMD[@]}" -rm -r -f "${requested_target_partitions[@]}"
 
-    log "重建 ${#target_partitions[@]} 个目标 HDFS 分区目录"
-    "${HDFS_CMD[@]}" -mkdir -p "${target_partitions[@]}"
+    log "创建目标 HDFS 表目录并批量复制 ${#source_partitions[@]} 个分区"
+    "${HDFS_CMD[@]}" -mkdir -p "${target_table_path%/}"
+    if ! "${HDFS_CMD[@]}" -cp "${source_partitions[@]}" "${target_table_path%/}/"; then
+        log "批量复制失败，切换逐分区复制"
+        local i
+        for (( i = 0; i < ${#source_partitions[@]}; i++ )); do
+            log "复制分区数据：${source_partitions[$i]} -> ${target_partitions[$i]}/"
+            "${HDFS_CMD[@]}" -mkdir -p "${target_partitions[$i]}"
+            "${HDFS_CMD[@]}" -cp -f "${source_partitions[$i]%/}/*" "${target_partitions[$i]%/}/"
+        done
+    fi
 
-    local i
-    for (( i = 0; i < ${#source_partitions[@]}; i++ )); do
-        log "复制分区数据：${source_partitions[$i]} -> ${target_partitions[$i]}/"
-        copy_partition_contents "${source_partitions[$i]}" "${target_partitions[$i]}"
-    done
-
-    beeline_run "USE ${target_database};MSCK REPAIR TABLE ${table_name}"
+    repair_partitions "$target_database" "$table_name" "${target_partitions[@]}"
     log "${target_database}.${table_name} 分区修复完成"
 }
+
+# 方法说明：执行 process_line_safely 函数，完成对应脚本处理。
+
+# 参数说明：$1 为位置参数；$2 为位置参数。
+
+# 返回说明：通过退出码表示执行成功或失败。
 
 process_line_safely() {
     local line_no=$1
@@ -325,6 +525,12 @@ process_line_safely() {
         return 1
     fi
 }
+
+# 方法说明：执行 main 函数，完成对应脚本处理。
+
+# 参数说明：$1 为位置参数；$@ 为位置参数。
+
+# 返回说明：通过退出码表示执行成功或失败。
 
 main() {
     local config_file=${1:-}

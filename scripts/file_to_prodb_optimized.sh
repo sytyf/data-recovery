@@ -14,7 +14,7 @@
 #   视图名 库名 表名 开始日期 结束日期
 #
 # 分区表本地目录格式:
-#   源根目录/YYYY-MM-DD/表名/tx_dt=YYYY-MM-DD/
+#   源根目录/YYYY-MM-DD/表名/分区字段=YYYY-MM-DD/
 #
 # 非分区表本地目录格式:
 #   非分区表源根目录/表名/
@@ -40,6 +40,13 @@ INCP_USER="${INCP_USER:-}"
 INCP_PASSWD="${INCP_PASSWD:-}"
 KRB_KEYTAB="${KRB_KEYTAB:-/home/tyf/etc/ekg.keytab}"
 KRB_PRINCIPAL="${KRB_PRINCIPAL:-ekg@TDH}"
+PARTITION_COLUMN="${PARTITION_COLUMN:-tx_dt}"
+
+# 方法说明：执行 log 函数，完成对应脚本处理。
+
+# 参数说明：$@ 为位置参数。
+
+# 返回说明：通过退出码表示执行成功或失败。
 
 log() {
     local message=$*
@@ -52,10 +59,22 @@ log() {
     fi
 }
 
+# 方法说明：执行 die 函数，完成对应脚本处理。
+
+# 参数说明：$@ 为位置参数。
+
+# 返回说明：通过退出码表示执行成功或失败。
+
 die() {
     log "错误：$*" >&2
     exit 1
 }
+
+# 方法说明：执行 on_error 函数，完成对应脚本处理。
+
+# 参数说明：无显式位置参数。
+
+# 返回说明：通过退出码表示执行成功或失败。
 
 on_error() {
     local exit_code=$?
@@ -64,6 +83,12 @@ on_error() {
 }
 trap on_error ERR
 
+# 方法说明：执行 trim 函数，完成对应脚本处理。
+
+# 参数说明：$1 为位置参数。
+
+# 返回说明：通过退出码表示执行成功或失败。
+
 trim() {
     local value=$1
     value="${value#"${value%%[![:space:]]*}"}"
@@ -71,9 +96,21 @@ trim() {
     printf '%s' "$value"
 }
 
+# 方法说明：执行 require_command 函数，完成对应脚本处理。
+
+# 参数说明：$1 为位置参数。
+
+# 返回说明：通过退出码表示执行成功或失败。
+
 require_command() {
     command -v "$1" >/dev/null 2>&1 || die "未找到命令：$1"
 }
+
+# 方法说明：执行 validate_identifier 函数，完成对应脚本处理。
+
+# 参数说明：$1 为位置参数；$2 为位置参数。
+
+# 返回说明：通过退出码表示执行成功或失败。
 
 validate_identifier() {
     local value=$1
@@ -81,6 +118,12 @@ validate_identifier() {
     [[ "$value" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] ||
         die "${label}不合法：${value}"
 }
+
+# 方法说明：执行 validate_date 函数，完成对应脚本处理。
+
+# 参数说明：$1 为位置参数。
+
+# 返回说明：通过退出码表示执行成功或失败。
 
 validate_date() {
     local value=$1
@@ -90,6 +133,12 @@ validate_date() {
     parsed=$(date -d "$value" '+%F' 2>/dev/null) || die "日期不存在：${value}"
     [[ "$parsed" == "$value" ]] || die "日期不存在：${value}"
 }
+
+# 方法说明：执行 normalize_date 函数，完成对应脚本处理。
+
+# 参数说明：$1 为位置参数。
+
+# 返回说明：通过退出码表示执行成功或失败。
 
 normalize_date() {
     local input=$1
@@ -113,6 +162,12 @@ normalize_date() {
     printf '%s' "$normalized"
 }
 
+# 方法说明：执行 parse_config_line 函数，完成对应脚本处理。
+
+# 参数说明：$1 为位置参数。
+
+# 返回说明：通过退出码表示执行成功或失败。
+
 parse_config_line() {
     local line=$1
 
@@ -127,6 +182,12 @@ parse_config_line() {
     field5=$(trim "${field5:-}")
     extra=$(trim "${extra:-}")
 }
+
+# 方法说明：执行 validate_hdfs_table_path 函数，完成对应脚本处理。
+
+# 参数说明：$1 为位置参数。
+
+# 返回说明：通过退出码表示执行成功或失败。
 
 validate_hdfs_table_path() {
     local path=$1
@@ -143,6 +204,12 @@ validate_hdfs_table_path() {
         die "拒绝操作危险的 HDFS 表路径：${path}"
 }
 
+# 方法说明：执行 beeline_run 函数，完成对应脚本处理。
+
+# 参数说明：$1 为位置参数。
+
+# 返回说明：通过退出码表示执行成功或失败。
+
 beeline_run() {
     local sql=$1
     local -a args=(
@@ -155,6 +222,12 @@ beeline_run() {
     [[ -z "$INCP_PASSWD" ]] || args+=(-p "$INCP_PASSWD")
     beeline "${args[@]}" -e "$sql"
 }
+
+# 方法说明：执行 query_scalar 函数，完成对应脚本处理。
+
+# 参数说明：$1 为位置参数。
+
+# 返回说明：通过退出码表示执行成功或失败。
 
 query_scalar() {
     local output
@@ -170,10 +243,50 @@ query_scalar() {
     }' <<< "$output"
 }
 
+# 方法说明：执行 directory_has_files 函数，完成对应脚本处理。
+
+# 参数说明：$1 为位置参数。
+
+# 返回说明：通过退出码表示执行成功或失败。
+
 directory_has_files() {
     local directory=$1
     [[ -n "$(find "$directory" -mindepth 1 -maxdepth 1 -type f -print -quit)" ]]
 }
+
+# 方法说明：执行 repair_partitions 函数，完成对应脚本处理。
+
+# 参数说明：$1 为位置参数；$2 为位置参数；$@ 为位置参数。
+
+# 返回说明：通过退出码表示执行成功或失败。
+
+repair_partitions() {
+    local database_name=$1
+    local table_name=$2
+    shift 2
+    local partition_path partition_date clauses=""
+
+    if [[ "${PARTITION_REPAIR_MODE:-add}" == "msck" ]]; then
+        beeline_run "USE ${database_name};MSCK REPAIR TABLE ${table_name}"
+        return
+    fi
+
+    for partition_path in "$@"; do
+        partition_date=${partition_path##*=}
+        clauses+=" PARTITION (${PARTITION_COLUMN}='${partition_date}') LOCATION '${partition_path}'"
+    done
+
+    if ! beeline_run "USE ${database_name};ALTER TABLE ${table_name} ADD IF NOT EXISTS${clauses}"; then
+        log "批量补充分区元数据失败，回退 MSCK REPAIR：${database_name}.${table_name}"
+        beeline_run "USE ${database_name};MSCK REPAIR TABLE ${table_name}"
+    fi
+}
+
+# 方法说明：执行 process_partitioned_table 函数，完成对应脚本处理。
+
+# 参数说明：$1 为位置参数；$2 为位置参数；$3 为位置参数；$4 为位置参数；$5 为位置参数。
+
+# 返回说明：通过退出码表示执行成功或失败。
 
 process_partitioned_table() {
     local database_name=$1
@@ -187,7 +300,7 @@ process_partitioned_table() {
 
     current_date=$start_date
     while :; do
-        source_partition="${SOURCE_BASE}/${current_date}/${table_name}/tx_dt=${current_date}"
+        source_partition="${SOURCE_BASE}/${current_date}/${table_name}/${PARTITION_COLUMN}=${current_date}"
 
         # 缺失或空分区不会触发生产数据删除；其余有效分区继续处理。
         if [[ ! -d "$source_partition" ]]; then
@@ -196,7 +309,7 @@ process_partitioned_table() {
             log "警告：源分区目录没有普通文件，跳过：${source_partition}"
         else
             source_partitions+=("$source_partition")
-            hdfs_partitions+=("${table_path%/}/tx_dt=${current_date}")
+            hdfs_partitions+=("${table_path%/}/${PARTITION_COLUMN}=${current_date}")
         fi
 
         [[ "$current_date" == "$end_date" ]] && break
@@ -227,10 +340,15 @@ process_partitioned_table() {
         done
     fi
 
-    # 已有分区元数据保持不变，新分区由 MSCK 注册。
-    beeline_run "USE ${database_name};MSCK REPAIR TABLE ${table_name}"
+    repair_partitions "$database_name" "$table_name" "${hdfs_partitions[@]}"
     log "${database_name}.${table_name} 分区数据上传及修复完成"
 }
+
+# 方法说明：执行 process_non_partitioned_table 函数，完成对应脚本处理。
+
+# 参数说明：$1 为位置参数；$2 为位置参数；$3 为位置参数。
+
+# 返回说明：通过退出码表示执行成功或失败。
 
 process_non_partitioned_table() {
     local database_name=$1
@@ -268,6 +386,12 @@ process_non_partitioned_table() {
     log "${database_name}.${table_name} 数据上传完成"
 }
 
+# 方法说明：执行 process_task 函数，完成对应脚本处理。
+
+# 参数说明：$1 为位置参数；$2 为位置参数；$3 为位置参数；$4 为位置参数。
+
+# 返回说明：通过退出码表示执行成功或失败。
+
 process_task() {
     local database_name=$1
     local table_name=$2
@@ -301,6 +425,12 @@ process_task() {
     fi
 }
 
+# 方法说明：执行 run_task_safely 函数，完成对应脚本处理。
+
+# 参数说明：$1 为位置参数；$2 为位置参数；$3 为位置参数；$4 为位置参数；$5 为位置参数。
+
+# 返回说明：通过退出码表示执行成功或失败。
+
 run_task_safely() {
     local line_no=$1
     local database_name=$2
@@ -322,6 +452,12 @@ run_task_safely() {
     fi
 }
 
+# 方法说明：执行 main 函数，完成对应脚本处理。
+
+# 参数说明：$@ 为位置参数。
+
+# 返回说明：通过退出码表示执行成功或失败。
+
 main() {
     local line line_no=0 task_count=0 success_count=0 fail_count=0
     local field1 field2 field3 field4 field5 extra
@@ -335,6 +471,7 @@ main() {
         die "配置文件不存在或不可读：${CONFIG_FILE}"
     [[ -n "$INCP_IP" ]] || die "请通过环境变量 INCP_IP 设置 HiveServer2 地址"
     [[ -n "$INCP_USER" ]] || die "请通过环境变量 INCP_USER 设置 Hive 用户"
+    validate_identifier "$PARTITION_COLUMN" "分区字段名"
 
     mkdir -p "$LOG_DIR"
     SOURCE_BASE=$(cd -P -- "$SOURCE_BASE" && pwd)

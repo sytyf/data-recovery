@@ -24,23 +24,48 @@ INCP_PASSWD="${INCP_PASSWD:-}"
 KRB_KEYTAB="${KRB_KEYTAB:-/home/tyf/etc/ekg.keytab}"
 KRB_PRINCIPAL="${KRB_PRINCIPAL:-ekg@TDH}"
 VIEW_DATABASE="${VIEW_DATABASE:-fdm}"
+VIEW_SOURCE_QUERY="${VIEW_SOURCE_QUERY:-0}"
 
 TEMP_OUTPUT=""
 TEMP_RECOVER_OUTPUT=""
 
+# 方法说明：执行 log 函数，完成对应脚本处理。
+
+# 参数说明：$@ 为位置参数。
+
+# 返回说明：通过退出码表示执行成功或失败。
+
 log() {
     printf '[%s] %s\n' "$(date '+%F %T')" "$*" >&2
 }
+
+# 方法说明：执行 die 函数，完成对应脚本处理。
+
+# 参数说明：$@ 为位置参数。
+
+# 返回说明：通过退出码表示执行成功或失败。
 
 die() {
     log "错误：$*"
     exit 1
 }
 
+# 方法说明：执行 cleanup 函数，完成对应脚本处理。
+
+# 参数说明：无显式位置参数。
+
+# 返回说明：通过退出码表示执行成功或失败。
+
 cleanup() {
     [[ -z "$TEMP_OUTPUT" ]] || rm -f -- "$TEMP_OUTPUT"
     [[ -z "$TEMP_RECOVER_OUTPUT" ]] || rm -f -- "$TEMP_RECOVER_OUTPUT"
 }
+
+# 方法说明：执行 on_error 函数，完成对应脚本处理。
+
+# 参数说明：无显式位置参数。
+
+# 返回说明：通过退出码表示执行成功或失败。
 
 on_error() {
     local exit_code=$?
@@ -50,6 +75,12 @@ on_error() {
 trap cleanup EXIT
 trap on_error ERR
 
+# 方法说明：执行 trim 函数，完成对应脚本处理。
+
+# 参数说明：$1 为位置参数。
+
+# 返回说明：通过退出码表示执行成功或失败。
+
 trim() {
     local value=$1
     value="${value#"${value%%[![:space:]]*}"}"
@@ -57,9 +88,21 @@ trim() {
     printf '%s' "$value"
 }
 
+# 方法说明：执行 require_command 函数，完成对应脚本处理。
+
+# 参数说明：$1 为位置参数。
+
+# 返回说明：通过退出码表示执行成功或失败。
+
 require_command() {
     command -v "$1" >/dev/null 2>&1 || die "未找到命令：$1"
 }
+
+# 方法说明：执行 validate_identifier 函数，完成对应脚本处理。
+
+# 参数说明：$1 为位置参数；$2 为位置参数。
+
+# 返回说明：通过退出码表示执行成功或失败。
 
 validate_identifier() {
     local value=$1
@@ -67,6 +110,12 @@ validate_identifier() {
     [[ "$value" =~ ^[a-z_][a-z0-9_]*$ ]] ||
         die "${label}不合法：${value}；只允许字母、数字和下划线，且不能以数字开头"
 }
+
+# 方法说明：执行 normalize_date 函数，完成对应脚本处理。
+
+# 参数说明：$1 为位置参数。
+
+# 返回说明：通过退出码表示执行成功或失败。
 
 normalize_date() {
     local input=$1
@@ -90,10 +139,22 @@ normalize_date() {
     printf '%s' "$normalized"
 }
 
+# 方法说明：执行 compact_date 函数，完成对应脚本处理。
+
+# 参数说明：$1 为位置参数。
+
+# 返回说明：通过退出码表示执行成功或失败。
+
 compact_date() {
     local value=$1
     printf '%s' "${value//-/}"
 }
+
+# 方法说明：执行 beeline_run 函数，完成对应脚本处理。
+
+# 参数说明：$1 为位置参数。
+
+# 返回说明：通过退出码表示执行成功或失败。
 
 beeline_run() {
     local sql=$1
@@ -107,6 +168,12 @@ beeline_run() {
     [[ -z "$INCP_PASSWD" ]] || args+=(-p "$INCP_PASSWD")
     beeline "${args[@]}" -e "$sql"
 }
+
+# 方法说明：执行 query_view_origin_text 函数，完成对应脚本处理。
+
+# 参数说明：$1 为位置参数。
+
+# 返回说明：通过退出码表示执行成功或失败。
 
 query_view_origin_text() {
     local view_name=$1
@@ -125,6 +192,12 @@ query_view_origin_text() {
 
     printf '%s\n' "$origin_text"
 }
+
+# 方法说明：执行 extract_base_tables 函数，完成对应脚本处理。
+
+# 参数说明：$1 为位置参数；$2 为位置参数。
+
+# 返回说明：通过退出码表示执行成功或失败。
 
 extract_base_tables() {
     local root_view=$1
@@ -158,6 +231,12 @@ extract_base_tables() {
     '
 }
 
+# 方法说明：执行 emit_source_table 函数，完成对应脚本处理。
+
+# 参数说明：$1 为位置参数；$2 为位置参数；$3 为位置参数；$4 为位置参数；$5 为位置参数。
+
+# 返回说明：通过退出码表示执行成功或失败。
+
 emit_source_table() {
     local root_view=$1
     local source_database=$2
@@ -174,6 +253,12 @@ emit_source_table() {
     printf '%s.%s %s-%s\n' \
         "$source_database" "$source_table" "$compact_start" "$compact_end" >> "$TEMP_RECOVER_OUTPUT"
 }
+
+# 方法说明：执行 expand_view_sources 函数，完成对应脚本处理。
+
+# 参数说明：$1 为位置参数；$2 为位置参数；$3 为位置参数；$4 为位置参数；$5 为位置参数。
+
+# 返回说明：通过退出码表示执行成功或失败。
 
 expand_view_sources() {
     local root_view=$1
@@ -212,6 +297,12 @@ expand_view_sources() {
     log "${current_view} 展开得到 ${source_count} 个直接非 fdm 源表"
 }
 
+# 方法说明：执行 process_view 函数，完成对应脚本处理。
+
+# 参数说明：$1 为位置参数；$2 为位置参数；$3 为位置参数。
+
+# 返回说明：通过退出码表示执行成功或失败。
+
 process_view() {
     local view_name=$1
     local start_date=$2
@@ -226,6 +317,12 @@ process_view() {
 
     expand_view_sources "$view_name" "$view_name" "$start_date" "$end_date"
 }
+
+# 方法说明：执行 process_line_safely 函数，完成对应脚本处理。
+
+# 参数说明：$1 为位置参数；$2 为位置参数。
+
+# 返回说明：通过退出码表示执行成功或失败。
 
 process_line_safely() {
     local line_no=$1
@@ -245,9 +342,8 @@ process_line_safely() {
 
         line=${raw_line//|/ }
         IFS=$' \t' read -r view_name start_date end_date extra <<< "$line"
-        [[ -n "${view_name:-}" && -n "${start_date:-}" &&
-           -n "${end_date:-}" && -z "${extra:-}" ]] ||
-            die "视图列表第 ${line_no} 行必须包含：视图名 开始日期 结束日期"
+        [[ -n "${view_name:-}" && -z "${extra:-}" ]] ||
+            die "视图列表第 ${line_no} 行必须包含视图名"
 
         # 视图名忽略大小写；未提供库名时使用 VIEW_DATABASE（默认 fdm）。
         view_name=${view_name,,}
@@ -257,10 +353,20 @@ process_line_safely() {
         [[ "$view_name" =~ ^[a-z_][a-z0-9_]*\.[a-z_][a-z0-9_]*$ ]] ||
             die "视图列表第 ${line_no} 行视图名格式不合法：${view_name}"
 
-        start_date=$(normalize_date "$start_date")
-        end_date=$(normalize_date "$end_date")
-        [[ "$start_date" < "$end_date" || "$start_date" == "$end_date" ]] ||
-            die "视图列表第 ${line_no} 行开始日期 ${start_date} 晚于结束日期 ${end_date}"
+        if [[ -n "${start_date:-}" ]]; then
+            start_date=$(normalize_date "$start_date")
+        elif [[ "$VIEW_SOURCE_QUERY" != "1" ]]; then
+            die "视图列表第 ${line_no} 行缺少开始日期"
+        fi
+        if [[ -n "${end_date:-}" ]]; then
+            end_date=$(normalize_date "$end_date")
+        elif [[ "$VIEW_SOURCE_QUERY" != "1" ]]; then
+            die "视图列表第 ${line_no} 行缺少结束日期"
+        fi
+        if [[ -n "${start_date:-}" && -n "${end_date:-}" ]]; then
+            [[ "$start_date" < "$end_date" || "$start_date" == "$end_date" ]] ||
+                die "视图列表第 ${line_no} 行开始日期 ${start_date} 晚于结束日期 ${end_date}"
+        fi
 
         process_view "$view_name" "$start_date" "$end_date"
     ); then
@@ -276,6 +382,12 @@ process_line_safely() {
         return 1
     fi
 }
+
+# 方法说明：执行 main 函数，完成对应脚本处理。
+
+# 参数说明：$1 为位置参数；$2 为位置参数；$@ 为位置参数。
+
+# 返回说明：通过退出码表示执行成功或失败。
 
 main() {
     local input_file=${1:-}

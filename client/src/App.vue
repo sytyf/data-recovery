@@ -1,5 +1,6 @@
 <script setup>
 import { computed, ref } from 'vue';
+import { aggregateViewSourceRows } from './view-source-rows.js';
 
 const modes = [
   {
@@ -21,16 +22,22 @@ const modes = [
     detail: '输入库名和日期，读取库下全部表名'
   },
   {
-    key: 'package',
+    key: 'view-source',
     index: '4',
-    title: '数据文件打包',
-    detail: '上传清单，读取库名、表名和日期范围并执行 HDFS get'
+    title: '视图源表查询',
+    detail: '上传 Excel，读取视图源表映射并导出结果'
   },
   {
     key: 'count',
     index: '5',
     title: '数据量查询',
     detail: '上传 Excel，读取库名、表名和日期范围，生成数据量统计 Excel'
+  },
+  {
+    key: 'package',
+    index: '6',
+    title: '数据文件打包',
+    detail: '上传清单，读取库名、表名和日期范围并执行 HDFS get'
   }
 ];
 
@@ -64,6 +71,15 @@ const packageModes = [
   }
 ];
 
+const viewSourceModes = [
+  {
+    key: 'view-source-query',
+    title: '查询视图源表',
+    hint: '解析视图定义并导出视图与源表映射 Excel',
+    icon: 'M4 5h16M4 12h16M4 19h16M8 5v14M16 5v14'
+  }
+];
+
 const countModes = [
   {
     key: 'view-count',
@@ -87,13 +103,15 @@ const sourceOptions = [
 const fieldTips = {
   startDate: '清单每行有开始日期时优先使用清单值；清单缺失时使用这里作为默认恢复开始日期。',
   endDate: '清单每行有结束日期时优先使用清单值；清单缺失时使用这里作为默认恢复结束日期。',
-  targetDatabase: '仅跨库数据恢复使用。优先使用清单每行的库名作为目标库；清单库名为空时，使用这里填写的统一目标库。源库默认 prodb_dm，可通过 SOURCE_DATABASE 配置修改。'
+  targetDatabase: '仅跨库数据恢复使用。优先使用清单每行的库名作为目标库；清单库名为空时，使用这里填写的统一目标库。',
+  sourceDatabase: '仅跨库数据恢复使用。作为数据源库；未填写时优先使用 SOURCE_DATABASE 配置，没有配置时默认为 prodb_dm。'
 };
 
 const activeMode = ref('view');
 const selectedFile = ref(null);
 const database = ref('');
 const targetDatabase = ref('');
+const sourceDatabase = ref('');
 const startDate = ref('');
 const endDate = ref('');
 const sourceType = ref('');
@@ -118,29 +136,38 @@ let eventSource = null;
 
 const activeModeInfo = computed(() => modes.find((mode) => mode.key === activeMode.value));
 const availableActions = computed(() => {
+  if (activeMode.value === 'view-source') return viewSourceModes;
   if (activeMode.value === 'package') return packageModes;
   if (activeMode.value === 'count') return countModes;
   return restoreModes;
 });
-const actionNoun = computed(() => (activeMode.value === 'package' ? '打包' : activeMode.value === 'count' ? '查询' : '恢复'));
-const completedCount = computed(() => rows.value.filter((row) => row.status === 'completed').length);
-const failedCount = computed(() => rows.value.filter((row) => row.status === 'failed').length);
-const runningCount = computed(() => rows.value.filter((row) => row.status === 'running').length);
-const pendingCount = computed(() => rows.value.filter((row) => row.status === 'pending').length);
+const actionNoun = computed(() => (
+  activeMode.value === 'package'
+    ? '打包'
+    : activeMode.value === 'count' || activeMode.value === 'view-source' ? '查询' : '恢复'
+));
+const displayRows = computed(() => {
+  if (activeMode.value !== 'view-source') return rows.value;
+  return aggregateViewSourceRows(rows.value);
+});
+const completedCount = computed(() => displayRows.value.filter((row) => row.status === 'completed').length);
+const failedCount = computed(() => displayRows.value.filter((row) => row.status === 'failed').length);
+const runningCount = computed(() => displayRows.value.filter((row) => row.status === 'running').length);
+const pendingCount = computed(() => displayRows.value.filter((row) => row.status === 'pending').length);
 const shellState = computed(() => {
   if (running.value && paused.value) return { label: `${actionNoun.value}已暂停`, state: 'paused' };
   if (running.value) return { label: `${actionNoun.value}执行中`, state: 'running' };
   if (failedCount.value) return { label: '存在失败行', state: 'failed' };
-  if (rows.value.length && completedCount.value === rows.value.length) return { label: `${actionNoun.value}完成`, state: 'completed' };
+  if (displayRows.value.length && completedCount.value === displayRows.value.length) return { label: `${actionNoun.value}完成`, state: 'completed' };
   return { label: '待执行', state: 'idle' };
 });
 const totalProgress = computed(() => {
-  if (!rows.value.length) return 0;
-  return Math.round(rows.value.reduce((sum, row) => sum + Number(row.progress || 0), 0) / rows.value.length);
+  if (!displayRows.value.length) return 0;
+  return Math.round(displayRows.value.reduce((sum, row) => sum + Number(row.progress || 0), 0) / displayRows.value.length);
 });
 const visibleTotalProgress = computed(() => (activeMode.value === 'count' ? countProgress.value : totalProgress.value));
 const taskStats = computed(() => [
-  { label: '总任务数', value: rows.value.length, tone: 'neutral' },
+  { label: '总任务数', value: displayRows.value.length, tone: 'neutral' },
   { label: '已完成', value: completedCount.value, tone: 'success' },
   { label: '失败任务', value: failedCount.value, tone: 'danger' },
   { label: '执行中', value: runningCount.value, tone: 'info' },
@@ -148,6 +175,11 @@ const taskStats = computed(() => [
   { label: '完成率', value: `${visibleTotalProgress.value}%`, tone: 'success' }
 ]);
 
+/**
+ * 方法说明：执行 selectMode 方法，完成对应业务处理。
+ * @param {*} mode - 当前功能模式。
+ * @returns {*} - 方法执行结果。
+ */
 function selectMode(mode) {
   if (running.value) {
     showNotice(`当前${actionNoun.value}任务正在执行，请先暂停或终止后再切换流程。`);
@@ -164,6 +196,10 @@ function selectMode(mode) {
   logs.value = ['已切换清单类型，等待新的输入。'];
 }
 
+/**
+ * 方法说明：执行 resetSummaryState 方法，完成对应业务处理。
+ * @returns {*} - 方法执行结果。
+ */
 function resetSummaryState() {
   summary.value = [];
   summaryFile.value = null;
@@ -174,6 +210,10 @@ function resetSummaryState() {
   countText.value = '';
 }
 
+/**
+ * 方法说明：执行 closeJobStream 方法，完成对应业务处理。
+ * @returns {*} - 方法执行结果。
+ */
 function closeJobStream() {
   if (eventSource) {
     eventSource.close();
@@ -181,22 +221,45 @@ function closeJobStream() {
   }
 }
 
+/**
+ * 方法说明：执行 onFileChange 方法，完成对应业务处理。
+ * @param {*} event - 参数 event。
+ * @returns {*} - 方法执行结果。
+ */
 function onFileChange(event) {
   selectedFile.value = event.target.files?.[0] || null;
 }
 
+/**
+ * 方法说明：执行 showNotice 方法，完成对应业务处理。
+ * @param {*} message - 参数 message。
+ * @returns {*} - 方法执行结果。
+ */
 function showNotice(message) {
   notice.value = message;
 }
 
+/**
+ * 方法说明：执行 clearNotice 方法，完成对应业务处理。
+ * @returns {*} - 方法执行结果。
+ */
 function clearNotice() {
   notice.value = '';
 }
 
+/**
+ * 方法说明：执行 hasMissingDateRows 方法，完成对应业务处理。
+ * @param {*} sourceRows - 参数 sourceRows。
+ * @returns {*} - 方法执行结果。
+ */
 function hasMissingDateRows(sourceRows = rows.value) {
   return sourceRows.some((row) => !row.startDate || !row.endDate);
 }
 
+/**
+ * 方法说明：执行 validateBeforeParse 方法，完成对应业务处理。
+ * @returns {*} - 方法执行结果。
+ */
 function validateBeforeParse() {
   if (activeMode.value !== 'full' && !selectedFile.value) {
     showNotice(`请先上传${activeModeInfo.value.title}清单文件，再点击读取清单。`);
@@ -215,6 +278,11 @@ function validateBeforeParse() {
   return true;
 }
 
+/**
+ * 方法说明：执行 validateBeforeRestore 方法，完成对应业务处理。
+ * @param {*} restoreMode - 恢复方式。
+ * @returns {*} - 方法执行结果。
+ */
 function validateBeforeRestore(restoreMode) {
   if (running.value) return false;
   if (!rows.value.length) {
@@ -222,9 +290,16 @@ function validateBeforeRestore(restoreMode) {
     return false;
   }
   const validRows = rows.value.filter((row) => row.status !== 'failed');
-  if (hasMissingDateRows(validRows)) {
+  if (activeMode.value !== 'view-source' && hasMissingDateRows(validRows)) {
     showNotice('存在未填写恢复开始日期或恢复结束日期的行，请在 Excel 中补充日期，或在页面日期输入框中设置默认时间段后重新读取清单。');
     return false;
+  }
+  if (activeMode.value === 'view-source') {
+    if (validRows.some((row) => !row.viewName)) {
+      showNotice('视图源表查询要求每行都包含视图名。');
+      return false;
+    }
+    return true;
   }
   if (restoreMode === 'continuous' || restoreMode === 'single') {
     if (!sourceType.value) {
@@ -260,6 +335,10 @@ function validateBeforeRestore(restoreMode) {
   return true;
 }
 
+/**
+ * 方法说明：执行 parseList 方法，完成对应业务处理。
+ * @returns {Promise<*>} - 方法执行结果。
+ */
 async function parseList() {
   if (!validateBeforeParse()) return;
   parsing.value = true;
@@ -296,6 +375,11 @@ async function parseList() {
   }
 }
 
+/**
+ * 方法说明：执行 startRestore 方法，完成对应业务处理。
+ * @param {*} restoreMode - 恢复方式。
+ * @returns {Promise<*>} - 方法执行结果。
+ */
 async function startRestore(restoreMode) {
   if (!validateBeforeRestore(restoreMode)) return;
   running.value = true;
@@ -312,6 +396,8 @@ async function startRestore(restoreMode) {
 
   const endpoint = activeMode.value === 'count'
     ? '/api/count-query'
+    : activeMode.value === 'view-source'
+      ? '/api/view-source-query'
     : restoreMode === 'package'
       ? '/api/package'
       : '/api/restore';
@@ -324,6 +410,7 @@ async function startRestore(restoreMode) {
       sourceMode: activeMode.value,
       sourceType: sourceType.value,
       targetDatabase: targetDatabase.value,
+      sourceDatabase: sourceDatabase.value,
       rows: rows.value
     })
   });
@@ -371,6 +458,11 @@ async function startRestore(restoreMode) {
   };
 }
 
+/**
+ * 方法说明：执行 controlCurrentJob 方法，完成对应业务处理。
+ * @param {*} action - 任务控制动作。
+ * @returns {Promise<*>} - 方法执行结果。
+ */
 async function controlCurrentJob(action) {
   if (!currentJobId.value) {
     showNotice('当前没有正在执行的任务。');
@@ -390,12 +482,20 @@ async function controlCurrentJob(action) {
   }
 }
 
+/**
+ * 方法说明：执行 togglePause 方法，完成对应业务处理。
+ * @returns {Promise<*>} - 方法执行结果。
+ */
 async function togglePause() {
   const payload = await controlCurrentJob(paused.value ? 'resume' : 'pause');
   if (!payload) return;
   paused.value = Boolean(payload.paused);
 }
 
+/**
+ * 方法说明：执行 requestTerminate 方法，完成对应业务处理。
+ * @returns {*} - 方法执行结果。
+ */
 function requestTerminate() {
   if (!running.value || !currentJobId.value) {
     showNotice('当前没有正在执行的任务。');
@@ -404,6 +504,10 @@ function requestTerminate() {
   confirmTerminate.value = true;
 }
 
+/**
+ * 方法说明：执行 terminateCurrentJob 方法，完成对应业务处理。
+ * @returns {Promise<*>} - 方法执行结果。
+ */
 async function terminateCurrentJob() {
   const payload = await controlCurrentJob('cancel');
   if (!payload) return;
@@ -475,16 +579,20 @@ async function terminateCurrentJob() {
               <input v-model.trim="database" placeholder="例如 prodb_dm" />
             </label>
             <label>
-              <span class="field-label" :title="fieldTips.startDate">恢复开始日期</span>
+              <span class="field-label" :title="fieldTips.startDate">{{ activeMode === 'view-source' ? '开始日期（可选）' : '恢复开始日期' }}</span>
               <input v-model="startDate" type="date" />
             </label>
             <label>
-              <span class="field-label" :title="fieldTips.endDate">恢复结束日期</span>
+              <span class="field-label" :title="fieldTips.endDate">{{ activeMode === 'view-source' ? '结束日期（可选）' : '恢复结束日期' }}</span>
               <input v-model="endDate" type="date" />
             </label>
-            <label>
+            <label v-if="activeMode === 'view' || activeMode === 'source'">
               <span class="field-label" :title="fieldTips.targetDatabase">跨库目标库</span>
               <input v-model.trim="targetDatabase" placeholder="清单库名为空时使用" />
+            </label>
+            <label v-if="activeMode === 'view' || activeMode === 'source'">
+              <span class="field-label" :title="fieldTips.sourceDatabase">跨库源库</span>
+              <input v-model.trim="sourceDatabase" placeholder="未填写时默认 prodb_dm" />
             </label>
           </div>
 
@@ -492,11 +600,11 @@ async function terminateCurrentJob() {
             <svg viewBox="0 0 24 24" aria-hidden="true">
               <path d="M5 12h14M13 5l7 7-7 7" />
             </svg>
-            {{ parsing ? '读取中...' : activeMode === 'full' ? '读取全库表名' : activeMode === 'count' ? '读取查询清单' : '读取清单' }}
+            {{ parsing ? '读取中...' : activeMode === 'full' ? '读取全库表名' : activeMode === 'count' || activeMode === 'view-source' ? '读取查询清单' : '读取清单' }}
           </button>
         </div>
 
-        <div v-if="activeMode !== 'package' && activeMode !== 'count'" class="source-selector">
+        <div v-if="activeMode !== 'package' && activeMode !== 'count' && activeMode !== 'view-source'" class="source-selector">
           <div>
             <h2>恢复源类型</h2>
             <p>执行恢复前选择源路径类型，路径由后端本地配置控制。</p>
@@ -515,7 +623,7 @@ async function terminateCurrentJob() {
           </div>
         </div>
 
-        <div :class="['action-strip', { package: activeMode === 'package' }]">
+        <div :class="['action-strip', { package: activeMode === 'package', single: activeMode === 'view-source' }]">
           <button
             v-for="mode in availableActions"
             :key="mode.key"
@@ -574,22 +682,25 @@ async function terminateCurrentJob() {
 
         <div v-else class="table-panel">
           <div class="table-header">
-            <h2>{{ activeMode === 'package' ? '打包对象' : activeMode === 'count' ? '查询对象' : '恢复对象' }}</h2>
+            <h2>{{ activeMode === 'package' ? '打包对象' : activeMode === 'count' || activeMode === 'view-source' ? '查询对象' : '恢复对象' }}</h2>
             <div class="metrics">
-              <span>{{ rows.length }} 行</span>
+              <span>{{ displayRows.length }} 行</span>
               <span>{{ completedCount }} 完成</span>
               <span>{{ visibleTotalProgress }}%</span>
             </div>
           </div>
 
           <div class="table-wrap">
-            <table>
+            <table :class="{ 'view-source-table': activeMode === 'view-source' }">
               <thead>
                 <tr>
                   <th>序号</th>
                   <th>视图名</th>
-                  <th>库名</th>
-                  <th>表名</th>
+                  <th v-if="activeMode === 'view-source'">源表</th>
+                  <template v-else>
+                    <th>库名</th>
+                    <th>表名</th>
+                  </template>
                   <th>开始日期</th>
                   <th>结束日期</th>
                   <th>状态</th>
@@ -597,11 +708,14 @@ async function terminateCurrentJob() {
                 </tr>
               </thead>
               <tbody>
-                <tr v-for="(row, index) in rows" :key="row.id">
+                <tr v-for="(row, index) in displayRows" :key="row.id">
                   <td>{{ index + 1 }}</td>
                   <td>{{ row.viewName || '-' }}</td>
-                  <td>{{ row.databaseName }}</td>
-                  <td>{{ row.tableName }}</td>
+                  <td v-if="activeMode === 'view-source'" class="source-tables-cell" :title="row.sourceTables">{{ row.sourceTables || '-' }}</td>
+                  <template v-else>
+                    <td>{{ row.databaseName }}</td>
+                    <td>{{ row.tableName }}</td>
+                  </template>
                   <td>{{ row.startDate }}</td>
                   <td>{{ row.endDate }}</td>
                   <td>
@@ -621,8 +735,8 @@ async function terminateCurrentJob() {
                     </div>
                   </td>
                 </tr>
-                <tr v-if="!rows.length">
-                  <td colspan="8" class="empty">上传清单或读取全库后，这里会显示待处理对象。</td>
+                <tr v-if="!displayRows.length">
+                  <td :colspan="activeMode === 'view-source' ? 7 : 8" class="empty">上传清单或读取全库后，这里会显示待处理对象。</td>
                 </tr>
               </tbody>
             </table>
@@ -641,9 +755,9 @@ async function terminateCurrentJob() {
         <section>
           <div class="section-heading">
             <div>
-              <h2>{{ activeMode === 'count' ? '数据量查询结果' : '数据量回查' }}</h2>
+              <h2>{{ activeMode === 'view-source' ? '视图源表查询结果' : activeMode === 'count' ? '数据量查询结果' : '数据量回查' }}</h2>
               <p v-if="summaryTotal">明细 {{ summaryTotal }} 条，0 数据分区 {{ summaryZeroTotal }} 条</p>
-              <p v-else>回查完成后生成完整 Excel 明细</p>
+              <p v-else>{{ activeMode === 'view-source' ? '查询完成后生成视图与源表映射 Excel 明细' : '回查完成后生成完整 Excel 明细' }}</p>
             </div>
             <a
               v-if="summaryFile?.url"
@@ -680,10 +794,10 @@ async function terminateCurrentJob() {
             </table>
           </div>
           <p v-else-if="summaryFile" class="summary-empty">
-            {{ activeMode === 'count' ? '查询完成，未发现数据量为 0 的时间分区。可下载 Excel 查看完整明细。' : '回查完成，未发现数据量为 0 的时间分区。可下载 Excel 查看完整明细。' }}
+            {{ activeMode === 'view-source' ? '视图源表查询完成，可下载 Excel 查看完整映射。' : activeMode === 'count' ? '查询完成，未发现数据量为 0 的时间分区。可下载 Excel 查看完整明细。' : '回查完成，未发现数据量为 0 的时间分区。可下载 Excel 查看完整明细。' }}
           </p>
           <p v-else class="summary-empty">
-            {{ activeMode === 'count' ? '查询完成后可下载完整 Excel 明细，页面仅展示数据量为 0 的时间分区。' : '恢复完成后仅展示数据量为 0 的时间分区，完整明细可下载 Excel。' }}
+            {{ activeMode === 'view-source' ? '查询完成后可下载视图与源表映射 Excel。' : activeMode === 'count' ? '查询完成后可下载完整 Excel 明细，页面仅展示数据量为 0 的时间分区。' : '恢复完成后仅展示数据量为 0 的时间分区，完整明细可下载 Excel。' }}
           </p>
         </section>
 

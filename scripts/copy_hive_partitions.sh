@@ -20,15 +20,34 @@ INCP_USER="${INCP_USER:-}"
 INCP_PASSWD="${INCP_PASSWD:-}"
 KRB_KEYTAB="${KRB_KEYTAB:-/home/tyf/etc/ekg.keytab}"
 KRB_PRINCIPAL="${KRB_PRINCIPAL:-ekg@TDH}"
+PARTITION_COLUMN="${PARTITION_COLUMN:-tx_dt}"
+
+# 方法说明：执行 log 函数，完成对应脚本处理。
+
+# 参数说明：$@ 为位置参数。
+
+# 返回说明：通过退出码表示执行成功或失败。
 
 log() {
     printf '[%s] %s\n' "$(date '+%F %T')" "$*"
 }
 
+# 方法说明：执行 die 函数，完成对应脚本处理。
+
+# 参数说明：$@ 为位置参数。
+
+# 返回说明：通过退出码表示执行成功或失败。
+
 die() {
     log "错误：$*" >&2
     exit 1
 }
+
+# 方法说明：执行 on_error 函数，完成对应脚本处理。
+
+# 参数说明：无显式位置参数。
+
+# 返回说明：通过退出码表示执行成功或失败。
 
 on_error() {
     local exit_code=$?
@@ -37,6 +56,12 @@ on_error() {
 }
 trap on_error ERR
 
+# 方法说明：执行 trim 函数，完成对应脚本处理。
+
+# 参数说明：$1 为位置参数。
+
+# 返回说明：通过退出码表示执行成功或失败。
+
 trim() {
     local value=$1
     value="${value#"${value%%[![:space:]]*}"}"
@@ -44,9 +69,21 @@ trim() {
     printf '%s' "$value"
 }
 
+# 方法说明：执行 require_command 函数，完成对应脚本处理。
+
+# 参数说明：$1 为位置参数。
+
+# 返回说明：通过退出码表示执行成功或失败。
+
 require_command() {
     command -v "$1" >/dev/null 2>&1 || die "未找到命令：$1"
 }
+
+# 方法说明：执行 validate_identifier 函数，完成对应脚本处理。
+
+# 参数说明：$1 为位置参数；$2 为位置参数。
+
+# 返回说明：通过退出码表示执行成功或失败。
 
 validate_identifier() {
     local value=$1
@@ -54,6 +91,12 @@ validate_identifier() {
     [[ "$value" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] ||
         die "${label}不合法：${value}；只允许字母、数字和下划线，且不能以数字开头"
 }
+
+# 方法说明：执行 validate_date 函数，完成对应脚本处理。
+
+# 参数说明：$1 为位置参数。
+
+# 返回说明：通过退出码表示执行成功或失败。
 
 validate_date() {
     local value=$1
@@ -64,6 +107,12 @@ validate_date() {
         die "日期不存在：${value}"
     [[ "$parsed" == "$value" ]] || die "日期不存在：${value}"
 }
+
+# 方法说明：执行 normalize_date 函数，完成对应脚本处理。
+
+# 参数说明：$1 为位置参数。
+
+# 返回说明：通过退出码表示执行成功或失败。
 
 normalize_date() {
     local input=$1
@@ -87,6 +136,12 @@ normalize_date() {
     printf '%s' "$normalized"
 }
 
+# 方法说明：执行 validate_local_path_text 函数，完成对应脚本处理。
+
+# 参数说明：$1 为位置参数；$2 为位置参数。
+
+# 返回说明：通过退出码表示执行成功或失败。
+
 validate_local_path_text() {
     local value=$1
     local label=$2
@@ -94,6 +149,12 @@ validate_local_path_text() {
     [[ "$value" != *'|'* && "$value" != *$'\n'* && "$value" != *$'\r'* ]] ||
         die "${label}包含不允许的字符：${value}"
 }
+
+# 方法说明：执行 parse_config_line 函数，完成对应脚本处理。
+
+# 参数说明：$1 为位置参数。
+
+# 返回说明：通过退出码表示执行成功或失败。
 
 parse_config_line() {
     local line=$1
@@ -110,6 +171,12 @@ parse_config_line() {
     extra=$(trim "${extra:-}")
 }
 
+# 方法说明：执行 beeline_run 函数，完成对应脚本处理。
+
+# 参数说明：$1 为位置参数。
+
+# 返回说明：通过退出码表示执行成功或失败。
+
 beeline_run() {
     local sql=$1
     local -a args=(
@@ -122,6 +189,12 @@ beeline_run() {
     [[ -z "$INCP_PASSWD" ]] || args+=(-p "$INCP_PASSWD")
     beeline "${args[@]}" -e "$sql"
 }
+
+# 方法说明：执行 query_scalar 函数，完成对应脚本处理。
+
+# 参数说明：$1 为位置参数。
+
+# 返回说明：通过退出码表示执行成功或失败。
 
 query_scalar() {
     local sql=$1
@@ -137,6 +210,12 @@ query_scalar() {
         }
     }' <<< "$output"
 }
+
+# 方法说明：执行 copy_partition_files 函数，完成对应脚本处理。
+
+# 参数说明：$1 为位置参数；$2 为位置参数。
+
+# 返回说明：通过退出码表示执行成功或失败。
 
 copy_partition_files() {
     local src_path=$1
@@ -156,6 +235,40 @@ copy_partition_files() {
         log "提示：源分区目录没有普通文件，跳过复制：${src_path}"
     fi
 }
+
+# 方法说明：执行 repair_partitions 函数，完成对应脚本处理。
+
+# 参数说明：$1 为位置参数；$2 为位置参数；$@ 为位置参数。
+
+# 返回说明：通过退出码表示执行成功或失败。
+
+repair_partitions() {
+    local database_name=$1
+    local table_name=$2
+    shift 2
+    local partition_path partition_date clauses=""
+
+    if [[ "${PARTITION_REPAIR_MODE:-add}" == "msck" ]]; then
+        beeline_run "USE ${database_name};MSCK REPAIR TABLE ${table_name}"
+        return
+    fi
+
+    for partition_path in "$@"; do
+        partition_date=${partition_path##*=}
+        clauses+=" PARTITION (${PARTITION_COLUMN}='${partition_date}') LOCATION '${partition_path}'"
+    done
+
+    if ! beeline_run "USE ${database_name};ALTER TABLE ${table_name} ADD IF NOT EXISTS${clauses}"; then
+        log "批量补充分区元数据失败，回退 MSCK REPAIR：${database_name}.${table_name}"
+        beeline_run "USE ${database_name};MSCK REPAIR TABLE ${table_name}"
+    fi
+}
+
+# 方法说明：执行 cleanup_stage_table_dir 函数，完成对应脚本处理。
+
+# 参数说明：$1 为位置参数；$2 为位置参数。
+
+# 返回说明：通过退出码表示执行成功或失败。
 
 cleanup_stage_table_dir() {
     local dest_base=$1
@@ -180,6 +293,12 @@ cleanup_stage_table_dir() {
     log "删除本地中转目录：${table_stage_dir}"
     rm -rf -- "$table_stage_dir"
 }
+
+# 方法说明：执行 process_task 函数，完成对应脚本处理。
+
+# 参数说明：$1 为位置参数；$2 为位置参数；$3 为位置参数；$4 为位置参数；$5 为位置参数；$6 为位置参数。
+
+# 返回说明：通过退出码表示执行成功或失败。
 
 process_task() {
     local src_base=$1
@@ -214,8 +333,8 @@ process_task() {
 
     current_date=$start_date
     while :; do
-        src_path="${src_base}/${current_date}/${target_table}/tx_dt=${current_date}"
-        dest_path="${dest_base}/${target_table}/tx_dt=${current_date}"
+        src_path="${src_base}/${current_date}/${target_table}/${PARTITION_COLUMN}=${current_date}"
+        dest_path="${dest_base}/${target_table}/${PARTITION_COLUMN}=${current_date}"
 
         if [[ -d "$src_path" ]]; then
             copy_partition_files "$src_path" "$dest_path"
@@ -250,8 +369,8 @@ process_task() {
         die "表路径包含非法换行符"
 
     for current_date in "${prepared_dates[@]}"; do
-        upload_paths+=("${dest_base}/${target_table}/tx_dt=${current_date}")
-        hdfs_partition_paths+=("${tab_path%/}/tx_dt=${current_date}")
+        upload_paths+=("${dest_base}/${target_table}/${PARTITION_COLUMN}=${current_date}")
+        hdfs_partition_paths+=("${tab_path%/}/${PARTITION_COLUMN}=${current_date}")
     done
 
     # 不执行 DROP PARTITION，保留已存在分区的 Hive 元数据。
@@ -260,7 +379,7 @@ process_task() {
     hdfs dfs -rm -r -f "${hdfs_partition_paths[@]}"
 
     # 多源 put 要求目标表根目录存在，但不能提前创建分区子目录；
-    # put 会使用本地 tx_dt=日期 目录名在表根目录下创建分区目录。
+    # put 会使用本地 ${PARTITION_COLUMN}=日期 目录名在表根目录下创建分区目录。
     log "确保 HDFS 表根目录存在：${tab_path%/}"
     hdfs dfs -mkdir -p "${tab_path%/}"
 
@@ -278,12 +397,17 @@ process_task() {
         done
     fi
 
-    # 已存在分区的元数据保持不变；此前不存在的分区由 MSCK 补充。
-    beeline_run "USE ${database_name};MSCK REPAIR TABLE ${target_table}"
+    repair_partitions "$database_name" "$target_table" "${hdfs_partition_paths[@]}"
     log "${database_name}.${target_table} 分区修复完成"
 
     cleanup_stage_table_dir "$dest_base" "$target_table"
 }
+
+# 方法说明：执行 process_line_safely 函数，完成对应脚本处理。
+
+# 参数说明：$1 为位置参数；$2 为位置参数。
+
+# 返回说明：通过退出码表示执行成功或失败。
 
 process_line_safely() {
     local line_no=$1
@@ -333,6 +457,12 @@ process_line_safely() {
     fi
 }
 
+# 方法说明：执行 main 函数，完成对应脚本处理。
+
+# 参数说明：$1 为位置参数；$2 为位置参数；$3 为位置参数；$@ 为位置参数。
+
+# 返回说明：通过退出码表示执行成功或失败。
+
 main() {
     local src_base=${1:-}
     local dest_base=${2:-}
@@ -354,6 +484,7 @@ main() {
         die "配置文件不存在或不可读：${config_file}"
     [[ -n "$INCP_IP" ]] || die "请通过环境变量 INCP_IP 设置 HiveServer2 地址"
     [[ -n "$INCP_USER" ]] || die "请通过环境变量 INCP_USER 设置 Hive 用户"
+    validate_identifier "$PARTITION_COLUMN" "分区字段名"
 
     for command_name in date realpath find cp rm kinit beeline hdfs awk; do
         require_command "$command_name"

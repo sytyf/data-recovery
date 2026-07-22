@@ -30,18 +30,42 @@ PARTITION_COLUMN="${PARTITION_COLUMN:-tx_dt}"
 
 TEMP_OUTPUT=""
 
+# 方法说明：执行 log 函数，完成对应脚本处理。
+
+# 参数说明：$@ 为位置参数。
+
+# 返回说明：通过退出码表示执行成功或失败。
+
 log() {
     printf '[%s] %s\n' "$(date '+%F %T')" "$*" >&2
 }
+
+# 方法说明：执行 die 函数，完成对应脚本处理。
+
+# 参数说明：$@ 为位置参数。
+
+# 返回说明：通过退出码表示执行成功或失败。
 
 die() {
     log "错误：$*"
     exit 1
 }
 
+# 方法说明：执行 cleanup 函数，完成对应脚本处理。
+
+# 参数说明：无显式位置参数。
+
+# 返回说明：通过退出码表示执行成功或失败。
+
 cleanup() {
     [[ -z "$TEMP_OUTPUT" ]] || rm -f -- "$TEMP_OUTPUT"
 }
+
+# 方法说明：执行 on_error 函数，完成对应脚本处理。
+
+# 参数说明：无显式位置参数。
+
+# 返回说明：通过退出码表示执行成功或失败。
 
 on_error() {
     local exit_code=$?
@@ -51,6 +75,12 @@ on_error() {
 trap cleanup EXIT
 trap on_error ERR
 
+# 方法说明：执行 trim 函数，完成对应脚本处理。
+
+# 参数说明：$1 为位置参数。
+
+# 返回说明：通过退出码表示执行成功或失败。
+
 trim() {
     local value=$1
     value="${value#"${value%%[![:space:]]*}"}"
@@ -58,9 +88,21 @@ trim() {
     printf '%s' "$value"
 }
 
+# 方法说明：执行 require_command 函数，完成对应脚本处理。
+
+# 参数说明：$1 为位置参数。
+
+# 返回说明：通过退出码表示执行成功或失败。
+
 require_command() {
     command -v "$1" >/dev/null 2>&1 || die "未找到命令：$1"
 }
+
+# 方法说明：执行 validate_identifier 函数，完成对应脚本处理。
+
+# 参数说明：$1 为位置参数；$2 为位置参数。
+
+# 返回说明：通过退出码表示执行成功或失败。
 
 validate_identifier() {
     local value=$1
@@ -68,6 +110,12 @@ validate_identifier() {
     [[ "$value" =~ ^[a-z_][a-z0-9_]*$ ]] ||
         die "${label}不合法：${value}；只允许字母、数字和下划线，且不能以数字开头"
 }
+
+# 方法说明：执行 normalize_date 函数，完成对应脚本处理。
+
+# 参数说明：$1 为位置参数。
+
+# 返回说明：通过退出码表示执行成功或失败。
 
 normalize_date() {
     local input=$1
@@ -91,6 +139,12 @@ normalize_date() {
     printf '%s' "$normalized"
 }
 
+# 方法说明：执行 validate_date 函数，完成对应脚本处理。
+
+# 参数说明：$1 为位置参数。
+
+# 返回说明：通过退出码表示执行成功或失败。
+
 validate_date() {
     local value=$1
     local parsed
@@ -101,6 +155,12 @@ validate_date() {
         die "日期不存在：${value}"
     [[ "$parsed" == "$value" ]] || die "日期不存在：${value}"
 }
+
+# 方法说明：执行 parse_config_line 函数，完成对应脚本处理。
+
+# 参数说明：$1 为位置参数。
+
+# 返回说明：通过退出码表示执行成功或失败。
 
 parse_config_line() {
     local line=$1
@@ -117,6 +177,12 @@ parse_config_line() {
     extra=$(trim "${extra:-}")
 }
 
+# 方法说明：执行 beeline_run 函数，完成对应脚本处理。
+
+# 参数说明：$1 为位置参数。
+
+# 返回说明：通过退出码表示执行成功或失败。
+
 beeline_run() {
     local sql=$1
     local -a args=(
@@ -129,6 +195,12 @@ beeline_run() {
     [[ -z "$INCP_PASSWD" ]] || args+=(-p "$INCP_PASSWD")
     beeline "${args[@]}" -e "$sql"
 }
+
+# 方法说明：执行 clean_scalar 函数，完成对应脚本处理。
+
+# 参数说明：无显式位置参数。
+
+# 返回说明：通过退出码表示执行成功或失败。
 
 clean_scalar() {
     awk '{
@@ -143,11 +215,23 @@ clean_scalar() {
     }'
 }
 
+# 方法说明：执行 query_scalar 函数，完成对应脚本处理。
+
+# 参数说明：$1 为位置参数。
+
+# 返回说明：通过退出码表示执行成功或失败。
+
 query_scalar() {
     local output
     output=$(beeline_run "$1")
     printf '%s\n' "$output" | clean_scalar
 }
+
+# 方法说明：执行 emit_count_result 函数，完成对应脚本处理。
+
+# 参数说明：$1 为位置参数；$2 为位置参数；$3 为位置参数；$4 为位置参数；$5 为位置参数。
+
+# 返回说明：通过退出码表示执行成功或失败。
 
 emit_count_result() {
     local view_name=$1
@@ -162,6 +246,12 @@ emit_count_result() {
         printf '%s|%s|%s|%s\n' "$database_name" "$table_name" "$stat_date" "$row_count" >> "$TEMP_OUTPUT"
     fi
 }
+
+# 方法说明：执行 load_partition_counts 函数，完成对应脚本处理。
+
+# 参数说明：$1 为位置参数。
+
+# 返回说明：通过退出码表示执行成功或失败。
 
 load_partition_counts() {
     local sql_output=$1
@@ -178,6 +268,12 @@ load_partition_counts() {
         PARTITION_COUNTS["$stat_date"]=$row_count
     done <<< "$sql_output"
 }
+
+# 方法说明：执行 process_partitioned_table 函数，完成对应脚本处理。
+
+# 参数说明：$1 为位置参数；$2 为位置参数；$3 为位置参数；$4 为位置参数；$5 为位置参数。
+
+# 返回说明：通过退出码表示执行成功或失败。
 
 process_partitioned_table() {
     local view_name=$1
@@ -205,6 +301,12 @@ process_partitioned_table() {
     done
 }
 
+# 方法说明：执行 process_non_partitioned_table 函数，完成对应脚本处理。
+
+# 参数说明：$1 为位置参数；$2 为位置参数；$3 为位置参数。
+
+# 返回说明：通过退出码表示执行成功或失败。
+
 process_non_partitioned_table() {
     local view_name=$1
     local database_name=$2
@@ -218,6 +320,12 @@ process_non_partitioned_table() {
 
     emit_count_result "$view_name" "$database_name" "$table_name" "ALL" "$row_count"
 }
+
+# 方法说明：执行 process_task 函数，完成对应脚本处理。
+
+# 参数说明：$1 为位置参数；$2 为位置参数；$3 为位置参数；$4 为位置参数；$5 为位置参数。
+
+# 返回说明：通过退出码表示执行成功或失败。
 
 process_task() {
     local view_name=$1
@@ -245,6 +353,12 @@ process_task() {
         process_non_partitioned_table "$view_name" "$database_name" "$table_name"
     fi
 }
+
+# 方法说明：执行 process_line_safely 函数，完成对应脚本处理。
+
+# 参数说明：$1 为位置参数；$2 为位置参数。
+
+# 返回说明：通过退出码表示执行成功或失败。
 
 process_line_safely() {
     local line_no=$1
@@ -303,6 +417,12 @@ process_line_safely() {
         return 1
     fi
 }
+
+# 方法说明：执行 main 函数，完成对应脚本处理。
+
+# 参数说明：$1 为位置参数；$2 为位置参数；$@ 为位置参数。
+
+# 返回说明：通过退出码表示执行成功或失败。
 
 main() {
     local input_file=${1:-}

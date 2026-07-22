@@ -20,6 +20,11 @@ const envPath = path.join(rootDir, '.env');
 const jobs = new Map();
 let generatedSqlSequence = 0;
 
+/**
+ * 方法说明：解析环境变量文本，去除首尾空白和包裹引号。
+ * @param {*} value - 待处理的输入值。
+ * @returns {*} - 方法执行结果。
+ */
 function parseEnvValue(value) {
   const trimmed = String(value || '').trim();
   const quote = trimmed[0];
@@ -29,6 +34,11 @@ function parseEnvValue(value) {
   return trimmed;
 }
 
+/**
+ * 方法说明：读取 .env 文件并将未定义的键加载到进程环境。
+ * @param {*} filePath - 输入或输出文件路径。
+ * @returns {*} - 方法执行结果。
+ */
 function loadDotEnv(filePath) {
   if (!fs.existsSync(filePath)) return;
   const lines = fs.readFileSync(filePath, 'utf8').split(/\r?\n/);
@@ -64,6 +74,10 @@ const statusText = {
   canceled: '已终止'
 };
 
+/**
+ * 方法说明：按优先级读取本地 JSON 恢复配置并解析为对象。
+ * @returns {*} - 方法执行结果。
+ */
 function readLocalRecoveryConfig() {
   const localConfigPath = localConfigPaths.find((item) => fs.existsSync(item));
   if (!localConfigPath) return {};
@@ -74,6 +88,10 @@ function readLocalRecoveryConfig() {
   }
 }
 
+/**
+ * 方法说明：合并环境变量和本地配置，得到各类恢复目录。
+ * @returns {*} - 方法执行结果。
+ */
 function getLocalPathConfig() {
   const localConfig = readLocalRecoveryConfig();
   return {
@@ -85,6 +103,11 @@ function getLocalPathConfig() {
   };
 }
 
+/**
+ * 方法说明：根据脱敏或未脱敏选项返回对应源目录及中转目录。
+ * @param {*} sourceType - 恢复源类型。
+ * @returns {*} - 方法执行结果。
+ */
 function resolveSourceRoot(sourceType) {
   const localPathConfig = getLocalPathConfig();
   const normalized = sourceType === 'unmasked' ? 'unmasked' : 'masked';
@@ -96,6 +119,13 @@ function resolveSourceRoot(sourceType) {
   };
 }
 
+/**
+ * 方法说明：设置 JSON 响应头并向浏览器返回结构化结果。
+ * @param {*} res - HTTP 响应对象。
+ * @param {*} code - HTTP 状态码。
+ * @param {*} payload - 待返回的 JSON 数据。
+ * @returns {*} - 方法执行结果。
+ */
 function sendJson(res, code, payload) {
   const body = JSON.stringify(payload);
   res.writeHead(code, {
@@ -123,12 +153,22 @@ const crcTable = (() => {
   return table;
 })();
 
+/**
+ * 方法说明：计算文件或数据缓冲区的 CRC32 校验值。
+ * @param {*} buffer - 数据缓冲区。
+ * @returns {*} - 方法执行结果。
+ */
 function crc32(buffer) {
   let crc = 0xffffffff;
   for (const byte of buffer) crc = crcTable[(crc ^ byte) & 0xff] ^ (crc >>> 8);
   return (crc ^ 0xffffffff) >>> 0;
 }
 
+/**
+ * 方法说明：将 JavaScript 日期转换为 ZIP 文件使用的 DOS 日期和时间。
+ * @param {*} date - 方法输入的 date 参数。
+ * @returns {*} - 方法执行结果。
+ */
 function dosDateTime(date = new Date()) {
   const year = Math.max(1980, date.getFullYear());
   const dosTime = (date.getHours() << 11) | (date.getMinutes() << 5) | Math.floor(date.getSeconds() / 2);
@@ -136,6 +176,11 @@ function dosDateTime(date = new Date()) {
   return { dosTime, dosDate };
 }
 
+/**
+ * 方法说明：根据文件条目构造不依赖第三方库的 ZIP 文件。
+ * @param {*} entries - 方法输入的 entries 参数。
+ * @returns {*} - 方法执行结果。
+ */
 function makeZip(entries) {
   const localParts = [];
   const centralParts = [];
@@ -199,6 +244,11 @@ function makeZip(entries) {
   return Buffer.concat([...localParts, centralDirectory, end]);
 }
 
+/**
+ * 方法说明：转义 XML 特殊字符，避免生成的工作簿 XML 无效。
+ * @param {*} value - 待处理的输入值。
+ * @returns {*} - 方法执行结果。
+ */
 function xmlEscape(value) {
   return String(value ?? '')
     .replace(/&/g, '&amp;')
@@ -207,6 +257,12 @@ function xmlEscape(value) {
     .replace(/"/g, '&quot;');
 }
 
+/**
+ * 方法说明：将行列下标转换为 Excel 单元格引用。
+ * @param {*} columnIndexValue - Excel 列下标。
+ * @param {*} rowIndex - 当前行下标。
+ * @returns {*} - 方法执行结果。
+ */
 function cellRef(columnIndexValue, rowIndex) {
   let value = columnIndexValue + 1;
   let letters = '';
@@ -218,6 +274,11 @@ function cellRef(columnIndexValue, rowIndex) {
   return `${letters}${rowIndex}`;
 }
 
+/**
+ * 方法说明：根据二维数据生成 Excel 工作表 XML。
+ * @param {*} rows - 任务行数组。
+ * @returns {*} - 方法执行结果。
+ */
 function makeSheetXml(rows) {
   const rowXml = rows.map((row, rowIndex) => {
     const cells = row.map((cell, columnIndexValue) => {
@@ -232,6 +293,12 @@ function makeSheetXml(rows) {
 </worksheet>`;
 }
 
+/**
+ * 方法说明：将工作表名称和数据行封装为可下载的 XLSX 文件。
+ * @param {*} sheetName - Excel 工作表名称。
+ * @param {*} rows - 任务行数组。
+ * @returns {*} - 方法执行结果。
+ */
 function makeSimpleXlsx(sheetName, rows) {
   return makeZip([
     {
@@ -274,6 +341,10 @@ function makeSimpleXlsx(sheetName, rows) {
   ]);
 }
 
+/**
+ * 方法说明：生成恢复清单上传模板。
+ * @returns {*} - 方法执行结果。
+ */
 function makeRecoveryTemplateXlsx() {
   return makeSimpleXlsx('恢复清单模板', [
     ['视图名', '库名', '源表名', '数据恢复开始日期', '数据恢复结束日期'],
@@ -281,6 +352,11 @@ function makeRecoveryTemplateXlsx() {
   ]);
 }
 
+/**
+ * 方法说明：生成包含日期分区数据量的回查结果 Excel。
+ * @param {*} summary - 数据量统计结果数组。
+ * @returns {*} - 方法执行结果。
+ */
 function makeCountSummaryXlsx(summary) {
   const rows = [
     ['视图名', '库名', '表名', '时间分区', '数据量', '查询状态', '查询错误'],
@@ -297,6 +373,30 @@ function makeCountSummaryXlsx(summary) {
   return makeSimpleXlsx('数据量回查明细', rows);
 }
 
+/**
+ * 方法说明：生成视图源表查询结果 Excel。
+ * @param {*} rows - 任务行数组。
+ * @returns {*} - 方法执行结果。
+ */
+function makeViewSourceSummaryXlsx(rows) {
+  return makeSimpleXlsx('视图源表查询', [
+    ['视图名', '源表库名', '源表名', '开始日期', '结束日期'],
+    ...rows.map((row) => [
+      row.viewName || '',
+      row.databaseName || '',
+      row.tableName || '',
+      row.startDate || '',
+      row.endDate || ''
+    ])
+  ]);
+}
+
+/**
+ * 方法说明：读取本地文件并根据扩展名设置响应类型后返回。
+ * @param {*} res - HTTP 响应对象。
+ * @param {*} filePath - 输入或输出文件路径。
+ * @returns {*} - 方法执行结果。
+ */
 function sendFile(res, filePath) {
   const ext = path.extname(filePath).toLowerCase();
   const contentTypes = {
@@ -320,6 +420,13 @@ function sendFile(res, filePath) {
   });
 }
 
+/**
+ * 方法说明：处理前端静态资源请求并返回页面或资源文件。
+ * @param {*} req - HTTP 请求对象。
+ * @param {*} res - HTTP 响应对象。
+ * @param {*} url - 方法输入的 url 参数。
+ * @returns {*} - 方法执行结果。
+ */
 function handleStatic(req, res, url) {
   if (req.method !== 'GET' && req.method !== 'HEAD') {
     return sendJson(res, 405, { error: 'Method not allowed' });
@@ -337,6 +444,11 @@ function handleStatic(req, res, url) {
   return sendFile(res, safePath);
 }
 
+/**
+ * 方法说明：收集 HTTP 请求体数据并在请求结束后返回缓冲区。
+ * @param {*} req - HTTP 请求对象。
+ * @returns {*} - 方法执行结果。
+ */
 function readBody(req) {
   return new Promise((resolve, reject) => {
     const chunks = [];
@@ -346,6 +458,12 @@ function readBody(req) {
   });
 }
 
+/**
+ * 方法说明：解析上传请求中的文件和普通表单字段。
+ * @param {*} buffer - 数据缓冲区。
+ * @param {*} contentType - 上传请求的 Content-Type。
+ * @returns {*} - 方法执行结果。
+ */
 function parseMultipart(buffer, contentType) {
   const boundaryMatch = /boundary=(?:"([^"]+)"|([^;]+))/i.exec(contentType || '');
   if (!boundaryMatch) return { fields: {}, files: {} };
@@ -383,6 +501,11 @@ function parseMultipart(buffer, contentType) {
   return { fields, files };
 }
 
+/**
+ * 方法说明：还原 XML 实体字符为普通文本。
+ * @param {*} value - 待处理的输入值。
+ * @returns {*} - 方法执行结果。
+ */
 function xmlDecode(value = '') {
   return value
     .replace(/&lt;/g, '<')
@@ -392,11 +515,22 @@ function xmlDecode(value = '') {
     .replace(/&apos;/g, "'");
 }
 
+/**
+ * 方法说明：从 ZIP 文件中读取指定条目内容。
+ * @param {*} filePath - 输入或输出文件路径。
+ * @param {*} entry - ZIP 文件条目。
+ * @returns {*} - 方法执行结果。
+ */
 function unzipEntry(filePath, entry) {
   const result = spawnSync('unzip', ['-p', filePath, entry], { encoding: 'utf8' });
   return result.status === 0 ? result.stdout : '';
 }
 
+/**
+ * 方法说明：解析 XLSX 共享字符串表。
+ * @param {*} xml - XML 文本。
+ * @returns {*} - 方法执行结果。
+ */
 function parseSharedStrings(xml) {
   const values = [];
   const items = xml.match(/<si[\s\S]*?<\/si>/g) || [];
@@ -409,6 +543,11 @@ function parseSharedStrings(xml) {
   return values;
 }
 
+/**
+ * 方法说明：将 Excel 列名转换为从零开始的列下标。
+ * @param {*} cellRef - 方法输入的 cellRef 参数。
+ * @returns {*} - 方法执行结果。
+ */
 function columnIndex(cellRef = '') {
   const letters = cellRef.replace(/[^A-Z]/g, '');
   let index = 0;
@@ -416,6 +555,11 @@ function columnIndex(cellRef = '') {
   return Math.max(0, index - 1);
 }
 
+/**
+ * 方法说明：将 Excel 数值日期转换为统一日期文本。
+ * @param {*} value - 待处理的输入值。
+ * @returns {*} - 方法执行结果。
+ */
 function excelSerialToDate(value) {
   const number = Number(value);
   if (!Number.isFinite(number) || number < 20000 || number > 80000) return String(value || '');
@@ -423,6 +567,12 @@ function excelSerialToDate(value) {
   return new Date(utc).toISOString().slice(0, 10);
 }
 
+/**
+ * 方法说明：解析 XLSX 工作表 XML 为二维单元格数组。
+ * @param {*} xml - XML 文本。
+ * @param {*} sharedStrings - 方法输入的 sharedStrings 参数。
+ * @returns {*} - 方法执行结果。
+ */
 function parseSheetXml(xml, sharedStrings) {
   const rows = [];
   const rowMatches = xml.match(/<row[\s\S]*?<\/row>/g) || [];
@@ -444,6 +594,11 @@ function parseSheetXml(xml, sharedStrings) {
   return rows;
 }
 
+/**
+ * 方法说明：读取 XLSX 压缩包并解析首个工作表。
+ * @param {*} filePath - 输入或输出文件路径。
+ * @returns {*} - 方法执行结果。
+ */
 function parseXlsx(filePath) {
   const shared = parseSharedStrings(unzipEntry(filePath, 'xl/sharedStrings.xml'));
   const workbook = unzipEntry(filePath, 'xl/workbook.xml');
@@ -456,6 +611,11 @@ function parseXlsx(filePath) {
   return parseSheetXml(unzipEntry(filePath, sheetEntry), shared);
 }
 
+/**
+ * 方法说明：按 CSV 引号规则解析文本表格。
+ * @param {*} filePath - 输入或输出文件路径。
+ * @returns {*} - 方法执行结果。
+ */
 function parseCsv(filePath) {
   const text = fs.readFileSync(filePath, 'utf8').replace(/^\uFEFF/, '');
   const rows = [];
@@ -489,6 +649,11 @@ function parseCsv(filePath) {
   return rows;
 }
 
+/**
+ * 方法说明：将表格首行作为字段名并转换为对象数组。
+ * @param {*} rows - 任务行数组。
+ * @returns {*} - 方法执行结果。
+ */
 function rowsToObjects(rows) {
   const headers = (rows[0] || []).map((header) => normalizeHeader(header));
   return rows.slice(1).map((row) => {
@@ -500,6 +665,11 @@ function rowsToObjects(rows) {
   });
 }
 
+/**
+ * 方法说明：统一表头大小写、空白和同义字段名称。
+ * @param {*} header - 方法输入的 header 参数。
+ * @returns {*} - 方法执行结果。
+ */
 function normalizeHeader(header = '') {
   const value = String(header).trim().toLowerCase().replace(/[\s_-]+/g, '');
   const map = {
@@ -531,6 +701,11 @@ function normalizeHeader(header = '') {
   return map[value] || value;
 }
 
+/**
+ * 方法说明：根据文件扩展名读取 XLSX 或 CSV 清单。
+ * @param {*} file - 上传文件对象。
+ * @returns {*} - 方法执行结果。
+ */
 function readTabularFile(file) {
   if (!file) return [];
   const ext = path.extname(file.filename).toLowerCase();
@@ -538,6 +713,13 @@ function readTabularFile(file) {
   return rowsToObjects(rows);
 }
 
+/**
+ * 方法说明：将年月日数字补零并校验为有效日期。
+ * @param {*} year - 方法输入的 year 参数。
+ * @param {*} month - 方法输入的 month 参数。
+ * @param {*} day - 方法输入的 day 参数。
+ * @returns {*} - 方法执行结果。
+ */
 function formatDateParts(year, month, day) {
   const normalizedMonth = String(Number(month)).padStart(2, '0');
   const normalizedDay = String(Number(day)).padStart(2, '0');
@@ -552,6 +734,12 @@ function formatDateParts(year, month, day) {
   return normalized;
 }
 
+/**
+ * 方法说明：兼容多种输入日期格式并统一为 YYYY-MM-DD。
+ * @param {*} value - 待处理的输入值。
+ * @param {*} fallback - 输入为空时使用的备用值。
+ * @returns {*} - 方法执行结果。
+ */
 function normalizeDate(value, fallback) {
   const rawValue = String(value || fallback || '').trim();
   if (!rawValue) return '';
@@ -562,24 +750,46 @@ function normalizeDate(value, fallback) {
   return rawValue.slice(0, 10);
 }
 
+/**
+ * 方法说明：清理库名、表名等标识符文本并转为小写。
+ * @param {*} value - 待处理的输入值。
+ * @returns {*} - 方法执行结果。
+ */
 function normalizeIdentifierText(value) {
   return String(value || '').trim().toLowerCase();
 }
 
+/**
+ * 方法说明：拆分可带库名前缀的表名并统一表名格式。
+ * @param {*} value - 待处理的输入值。
+ * @returns {*} - 方法执行结果。
+ */
 function normalizeTableName(value) {
   return normalizeIdentifierText(value);
 }
 
+/**
+ * 方法说明：读取视图查询默认数据库配置。
+ * @returns {*} - 方法执行结果。
+ */
 function getViewDatabase() {
   const viewDatabase = normalizeIdentifierText(process.env.VIEW_DATABASE || 'fdm');
   validateIdentifier(viewDatabase, '视图库名');
   return viewDatabase;
 }
 
+/**
+ * 方法说明：判断当前是否允许访问真实 Hive 和 HDFS。
+ * @returns {*} - 方法执行结果。
+ */
 function isExecutionEnabled() {
   return process.env.RECOVERY_EXECUTE === '1';
 }
 
+/**
+ * 方法说明：返回当前真实执行或 dry-run 模式的说明信息。
+ * @returns {*} - 方法执行结果。
+ */
 function getExecutionMeta() {
   return {
     dryRun: !isExecutionEnabled(),
@@ -589,12 +799,23 @@ function getExecutionMeta() {
   };
 }
 
+/**
+ * 方法说明：校验数据库、表名和配置字段是否符合安全标识符格式。
+ * @param {*} value - 待处理的输入值。
+ * @param {*} label - 状态或日志标签。
+ * @returns {*} - 方法执行结果。
+ */
 function validateIdentifier(value, label) {
   if (!/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(String(value || ''))) {
     throw new Error(`${label}不合法：${value}`);
   }
 }
 
+/**
+ * 方法说明：校验任务开始日期和结束日期均有效且顺序正确。
+ * @param {*} row - 当前任务行对象。
+ * @returns {*} - 方法执行结果。
+ */
 function validateDateRange(row) {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(row.startDate || '') || !/^\d{4}-\d{2}-\d{2}$/.test(row.endDate || '')) {
     throw new Error(`日期范围不合法：${row.startDate || '空'} 至 ${row.endDate || '空'}`);
@@ -602,6 +823,29 @@ function validateDateRange(row) {
   if (row.startDate > row.endDate) throw new Error(`开始日期晚于结束日期：${row.startDate} 至 ${row.endDate}`);
 }
 
+/**
+ * 方法说明：校验允许为空的日期字段及其日期顺序。
+ * @param {*} row - 当前任务行对象。
+ * @returns {*} - 方法执行结果。
+ */
+function validateOptionalDateRange(row) {
+  if (row.startDate && !/^\d{4}-\d{2}-\d{2}$/.test(row.startDate)) {
+    throw new Error(`开始日期格式不合法：${row.startDate}`);
+  }
+  if (row.endDate && !/^\d{4}-\d{2}-\d{2}$/.test(row.endDate)) {
+    throw new Error(`结束日期格式不合法：${row.endDate}`);
+  }
+  if (row.startDate && row.endDate && row.startDate > row.endDate) {
+    throw new Error(`开始日期晚于结束日期：${row.startDate} 至 ${row.endDate}`);
+  }
+}
+
+/**
+ * 方法说明：将清单中的异常行转换为可展示和可跳过的失败行。
+ * @param {*} row - 当前任务行对象。
+ * @param {*} error - 捕获到的错误对象。
+ * @returns {*} - 方法执行结果。
+ */
 function markInvalidListRow(row, error) {
   return {
     ...row,
@@ -611,6 +855,11 @@ function markInvalidListRow(row, error) {
   };
 }
 
+/**
+ * 方法说明：校验清单行日期并返回标准化日期结果。
+ * @param {*} row - 当前任务行对象。
+ * @returns {*} - 方法执行结果。
+ */
 function validateListRowDate(row) {
   try {
     validateDateRange(row);
@@ -620,6 +869,11 @@ function validateListRowDate(row) {
   }
 }
 
+/**
+ * 方法说明：校验 HDFS 表路径非空且不包含危险根路径。
+ * @param {*} tablePath - Hive 表对应的 HDFS 路径。
+ * @returns {*} - 方法执行结果。
+ */
 function validateHdfsTablePath(tablePath) {
   const value = String(tablePath || '');
   if (!value || value.includes('\n') || value.includes('\r')) throw new Error(`Hive 表路径为空或非法：${value}`);
@@ -710,10 +964,20 @@ async function runHdfsCommandAsync(args, options = {}) {
   throw new Error(`未找到 HDFS 命令：${lastError?.message || 'hdfs/hadoop 不可用'}`);
 }
 
+/**
+ * 方法说明：同步检查指定 HDFS 路径是否为存在的目录。
+ * @param {*} tablePath - Hive 表对应的 HDFS 路径。
+ * @returns {*} - 方法执行结果。
+ */
 function hdfsTestDir(tablePath) {
   return runHdfsCommand(['-test', '-d', tablePath], { allowFailure: true }).status === 0;
 }
 
+/**
+ * 方法说明：执行单值 Hive 查询并提取第一条有效结果。
+ * @param {*} sql - 待执行的 SQL 文本。
+ * @returns {*} - 方法执行结果。
+ */
 function queryScalar(sql) {
   const output = runBeeline(['-e', sql]);
   for (const rawLine of output.split(/\r?\n/)) {
@@ -723,22 +987,42 @@ function queryScalar(sql) {
   return '';
 }
 
+/**
+ * 方法说明：读取并校验日期分区字段配置，默认使用 tx_dt。
+ * @returns {*} - 方法执行结果。
+ */
 function getPartitionColumn() {
   const partitionColumn = process.env.PARTITION_COLUMN || 'tx_dt';
   validateIdentifier(partitionColumn, '分区字段名');
   return partitionColumn;
 }
 
-function getSourceDatabase() {
-  const sourceDatabase = normalizeIdentifierText(process.env.SOURCE_DATABASE || 'prodb_dm');
+/**
+ * 方法说明：按页面输入、环境变量和默认值确定跨库源数据库。
+ * @param {*} inputDatabase - 方法输入的 inputDatabase 参数。
+ * @returns {*} - 方法执行结果。
+ */
+function getSourceDatabase(inputDatabase = '') {
+  const sourceDatabase = normalizeIdentifierText(inputDatabase || process.env.SOURCE_DATABASE || 'prodb_dm');
   validateIdentifier(sourceDatabase, '源库名');
   return sourceDatabase;
 }
 
+/**
+ * 方法说明：生成库名和表名组成的内部缓存键。
+ * @param {*} row - 当前任务行对象。
+ * @returns {*} - 方法执行结果。
+ */
 function tableKey(row) {
   return `${row.databaseName}.${row.tableName}`;
 }
 
+/**
+ * 方法说明：按大小写不敏感条件查询 Hive 表的 HDFS 存储路径。
+ * @param {*} databaseName - 数据库名称。
+ * @param {*} tableName - 表名称。
+ * @returns {*} - 方法执行结果。
+ */
 function getTableLocation(databaseName, tableName) {
   validateIdentifier(databaseName, '库名');
   validateIdentifier(tableName, '表名');
@@ -752,6 +1036,12 @@ function getTableLocation(databaseName, tableName) {
   return tablePath;
 }
 
+/**
+ * 方法说明：优先查询分区元数据并在必要时检查建表语句。
+ * @param {*} databaseName - 数据库名称。
+ * @param {*} tableName - 表名称。
+ * @returns {*} - 方法执行结果。
+ */
 function isPartitionedTable(databaseName, tableName) {
   validateIdentifier(databaseName, '库名');
   validateIdentifier(tableName, '表名');
@@ -771,6 +1061,191 @@ function isPartitionedTable(databaseName, tableName) {
   }
 }
 
+/**
+ * 方法说明：读取跨库表级并发数并限制在安全上限内。
+ * @returns {*} - 方法执行结果。
+ */
+function getCrossTableConcurrency() {
+  const configured = Number.parseInt(process.env.CROSS_TABLE_CONCURRENCY || '2', 10);
+  return Number.isInteger(configured) && configured > 0 ? Math.min(configured, 4) : 2;
+}
+
+/**
+ * 方法说明：从 hdfs ls 输出中提取指定分区字段的日期集合。
+ * @param {*} output - 方法输入的 output 参数。
+ * @param {*} partitionColumn - 日期分区字段名。
+ * @returns {*} - 方法执行结果。
+ */
+function parseHdfsPartitionDates(output, partitionColumn) {
+  const escapedColumn = String(partitionColumn).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const pattern = new RegExp(`${escapedColumn}=(\\d{4}-\\d{2}-\\d{2})/?$`);
+  const dates = new Set();
+  for (const line of String(output || '').split(/\r?\n/)) {
+    const fields = line.trim().split(/\s+/);
+    const candidate = fields[fields.length - 1] || '';
+    const match = pattern.exec(candidate);
+    if (match) dates.add(match[1]);
+  }
+  return dates;
+}
+
+/**
+ * 方法说明：批量列出 HDFS 表下的日期分区并解析结果。
+ * @param {*} tablePath - Hive 表对应的 HDFS 路径。
+ * @param {*} partitionColumn - 日期分区字段名。
+ * @param {*} job - 当前后台任务对象。
+ * @returns {Promise<*>} - 方法执行结果。
+ */
+async function listHdfsPartitionDatesAsync(tablePath, partitionColumn, job) {
+  const root = tablePath.replace(/\/+$/, '');
+  const result = await runHdfsCommandAsync(['-ls', '-d', `${root}/${partitionColumn}=*`], {
+    job,
+    allowFailure: true
+  });
+  if (result.status !== 0) return null;
+  return parseHdfsPartitionDates(result.stdout, partitionColumn);
+}
+
+/**
+ * 方法说明：优先批量复制跨库分区，失败后逐分区重试。
+ * @param {*} job - 当前后台任务对象。
+ * @param {*} row - 当前任务行对象。
+ * @param {*} sourcePartitions - 源日期分区路径数组。
+ * @param {*} targetPartitions - 目标日期分区路径数组。
+ * @param {*} targetTableRoot - 目标表 HDFS 根目录。
+ * @returns {Promise<*>} - 方法执行结果。
+ */
+async function copyCrossPartitionsAsync(job, row, sourcePartitions, targetPartitions, targetTableRoot) {
+  const sourceCount = sourcePartitions.length;
+  try {
+    job.logs.push(`批量复制 ${sourceCount} 个跨库分区：${row.tableName}`);
+    await runWithProgressHeartbeat(job, [row], `批量复制跨库分区 1/${sourceCount}`, 88, () => (
+      runHdfsCommandAsync(['-cp', ...sourcePartitions, `${targetTableRoot}/`], {
+        job,
+        onData: (chunk) => appendLog(job, chunk)
+      })
+    ));
+    row.progress = Math.max(row.progress || 0, 90);
+    sendJob(job);
+    return;
+  } catch (batchError) {
+    job.logs.push(`批量复制跨库分区失败，切换逐分区复制：${batchError.message}`);
+    sendJob(job);
+  }
+
+  for (let index = 0; index < sourcePartitions.length; index += 1) {
+    await jobCheckpoint(job);
+    const sourcePartition = sourcePartitions[index];
+    const targetPartition = targetPartitions[index];
+    job.logs.push(`逐分区复制 ${index + 1}/${sourceCount}：${sourcePartition} -> ${targetPartition}/`);
+    await runWithProgressHeartbeat(job, [row], `逐分区复制 ${index + 1}/${sourceCount}`, 88, () => (
+      runHdfsCommandAsync(['-mkdir', '-p', targetPartition], { job })
+        .then(() => runHdfsCommandAsync([
+          '-cp', '-f', `${sourcePartition.replace(/\/+$/, '')}/*`, `${targetPartition.replace(/\/+$/, '')}/`
+        ], { job, onData: (chunk) => appendLog(job, chunk) }))
+    ));
+    row.progress = Math.max(row.progress || 0, Math.min(90, Math.round(52 + ((index + 1) / sourceCount) * 38)));
+    sendJob(job);
+  }
+}
+
+/**
+ * 方法说明：按配置批量补充目标表分区元数据或执行 MSCK。
+ * @param {*} job - 当前后台任务对象。
+ * @param {*} row - 当前任务行对象。
+ * @param {*} targetPartitions - 目标日期分区路径数组。
+ * @param {*} partitionColumn - 日期分区字段名。
+ * @param {*} configuredMode - 配置的分区修复模式。
+ * @returns {Promise<*>} - 方法执行结果。
+ */
+async function repairHdfsPartitionsAsync(job, row, targetPartitions, partitionColumn, configuredMode = '') {
+  const repairMode = String(configuredMode || process.env.PARTITION_REPAIR_MODE || 'add').toLowerCase();
+  if (repairMode === 'msck') {
+    job.logs.push(`按配置执行全表分区修复：${row.databaseName}.${row.tableName}`);
+    await runWithProgressHeartbeat(job, [row], '修复 Hive 分区中', 92, () => (
+      runBeelineAsync(['-e', `USE ${row.databaseName};MSCK REPAIR TABLE ${row.tableName}`], {
+        job,
+        onData: (chunk) => appendLog(job, chunk)
+      })
+    ));
+    return;
+  }
+
+  const partitionClauses = targetPartitions.map((partitionPath) => {
+    const match = new RegExp(`${String(partitionColumn).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}=(\\d{4}-\\d{2}-\\d{2})$`).exec(partitionPath);
+    if (!match) throw new Error(`无法从目标分区路径识别日期：${partitionPath}`);
+    return `PARTITION (${partitionColumn}='${match[1]}') LOCATION '${sqlString(partitionPath)}'`;
+  }).join(' ');
+
+  try {
+    job.logs.push(`按明确分区位置补充 Hive 元数据：${targetPartitions.length} 个分区`);
+    await runWithProgressHeartbeat(job, [row], '补充 Hive 分区元数据中', 92, () => (
+      runBeelineAsync(['-e', `USE ${row.databaseName};ALTER TABLE ${row.tableName} ADD IF NOT EXISTS ${partitionClauses}`], {
+        job,
+        onData: (chunk) => appendLog(job, chunk)
+      })
+    ));
+  } catch (error) {
+    job.logs.push(`批量补充分区元数据失败，回退 MSCK REPAIR：${error.message}`);
+    await runWithProgressHeartbeat(job, [row], '回退修复 Hive 分区中', 92, () => (
+      runBeelineAsync(['-e', `USE ${row.databaseName};MSCK REPAIR TABLE ${row.tableName}`], {
+        job,
+        onData: (chunk) => appendLog(job, chunk)
+      })
+    ));
+  }
+}
+
+/**
+ * 方法说明：读取恢复表级并发配置并限制并发上限。
+ * @returns {*} - 方法执行结果。
+ */
+function getRecoveryTableConcurrency() {
+  const configured = Number.parseInt(process.env.RECOVERY_TABLE_CONCURRENCY || '2', 10);
+  return Number.isInteger(configured) && configured > 0 ? Math.min(configured, 4) : 2;
+}
+
+/**
+ * 方法说明：按目标表分组，在保持同表串行的前提下受控并发执行。
+ * @param {*} job - 当前后台任务对象。
+ * @param {*} rows - 任务行数组。
+ * @param {*} processRow - 方法输入的 processRow 参数。
+ * @param {*} label - 状态或日志标签。
+ * @returns {Promise<*>} - 方法执行结果。
+ */
+async function executeRestoreRowsByTable(job, rows, processRow, label) {
+  const groupsByTable = new Map();
+  for (const row of rows) {
+    const key = `${row.databaseName || ''}.${row.tableName || ''}`;
+    if (!groupsByTable.has(key)) groupsByTable.set(key, []);
+    groupsByTable.get(key).push(row);
+  }
+  const groups = [...groupsByTable.values()];
+  const concurrency = Math.min(getRecoveryTableConcurrency(), groups.length || 1);
+  job.logs.push(`${label}启用 ${concurrency} 路表级并发，同一目标表内任务保持串行。`);
+  sendJob(job);
+  let nextGroupIndex = 0;
+  /**
+   * 方法说明：从共享任务索引中领取下一组任务并执行该组任务。
+   * @returns {Promise<*>} - 方法执行结果。
+   */
+  async function worker() {
+    while (true) {
+      const groupIndex = nextGroupIndex;
+      nextGroupIndex += 1;
+      if (groupIndex >= groups.length) return;
+      for (const row of groups[groupIndex]) await processRow(row);
+    }
+  }
+  await Promise.all(Array.from({ length: concurrency }, () => worker()));
+}
+
+/**
+ * 方法说明：校验本地目录配置存在且确实为目录。
+ * @param {*} dirPath - 方法输入的 dirPath 参数。
+ * @param {*} label - 状态或日志标签。
+ * @returns {*} - 方法执行结果。
+ */
 function ensureLocalDirectory(dirPath, label) {
   if (!dirPath) throw new Error(`${label}不能为空`);
   const resolved = path.resolve(dirPath);
@@ -778,6 +1253,12 @@ function ensureLocalDirectory(dirPath, label) {
   return resolved;
 }
 
+/**
+ * 方法说明：创建并校验可写的本地根目录。
+ * @param {*} dirPath - 方法输入的 dirPath 参数。
+ * @param {*} label - 状态或日志标签。
+ * @returns {*} - 方法执行结果。
+ */
 function ensureWritableRootDirectory(dirPath, label) {
   if (!dirPath) throw new Error(`${label}不能为空`);
   const resolved = path.resolve(dirPath);
@@ -786,6 +1267,11 @@ function ensureWritableRootDirectory(dirPath, label) {
   return resolved;
 }
 
+/**
+ * 方法说明：列出目录下的普通文件，不递归处理子目录。
+ * @param {*} dirPath - 方法输入的 dirPath 参数。
+ * @returns {*} - 方法执行结果。
+ */
 function listRegularFiles(dirPath) {
   if (!fs.existsSync(dirPath) || !fs.statSync(dirPath).isDirectory()) return [];
   return fs.readdirSync(dirPath)
@@ -793,6 +1279,12 @@ function listRegularFiles(dirPath) {
     .filter((filePath) => fs.statSync(filePath).isFile());
 }
 
+/**
+ * 方法说明：将源目录中的普通文件复制到目标目录。
+ * @param {*} sourceDir - 方法输入的 sourceDir 参数。
+ * @param {*} targetDir - 方法输入的 targetDir 参数。
+ * @returns {*} - 方法执行结果。
+ */
 function copyRegularFiles(sourceDir, targetDir) {
   fs.mkdirSync(targetDir, { recursive: true });
   const files = listRegularFiles(sourceDir);
@@ -803,6 +1295,12 @@ function copyRegularFiles(sourceDir, targetDir) {
   return files.length;
 }
 
+/**
+ * 方法说明：在安全边界校验通过后删除中转目录。
+ * @param {*} rootPath - 方法输入的 rootPath 参数。
+ * @param {*} targetPath - 方法输入的 targetPath 参数。
+ * @returns {*} - 方法执行结果。
+ */
 function removeLocalDirInsideRoot(rootPath, targetPath) {
   const root = path.resolve(rootPath);
   const target = path.resolve(targetPath);
@@ -825,6 +1323,11 @@ function runScriptSync(scriptName, args, options = {}) {
   return result;
 }
 
+/**
+ * 方法说明：组装 HiveServer2 Beeline 连接和输出参数。
+ * @param {*} extraArgs - 方法输入的 extraArgs 参数。
+ * @returns {*} - 方法执行结果。
+ */
 function getBeelineArgs(extraArgs = []) {
   if (!process.env.INCP_IP || !process.env.INCP_USER) {
     throw new Error('回查数据量需要设置 INCP_IP 和 INCP_USER');
@@ -843,6 +1346,10 @@ function getBeelineArgs(extraArgs = []) {
   return args;
 }
 
+/**
+ * 方法说明：在配置完整时执行 Kerberos 登录。
+ * @returns {*} - 方法执行结果。
+ */
 function kerberosLoginIfPossible() {
   const keytab = process.env.KRB_KEYTAB || '/home/tyf/etc/ekg.keytab';
   const principal = process.env.KRB_PRINCIPAL || 'ekg@TDH';
@@ -852,6 +1359,11 @@ function kerberosLoginIfPossible() {
   }
 }
 
+/**
+ * 方法说明：异步执行 Kerberos 登录并写入任务日志。
+ * @param {*} job - 当前后台任务对象。
+ * @returns {Promise<*>} - 方法执行结果。
+ */
 async function kerberosLoginIfPossibleAsync(job) {
   const keytab = process.env.KRB_KEYTAB || '/home/tyf/etc/ekg.keytab';
   const principal = process.env.KRB_PRINCIPAL || 'ekg@TDH';
@@ -863,6 +1375,11 @@ async function kerberosLoginIfPossibleAsync(job) {
   }
 }
 
+/**
+ * 方法说明：同步执行 Beeline 查询并返回文本结果。
+ * @param {*} extraArgs - 方法输入的 extraArgs 参数。
+ * @returns {*} - 方法执行结果。
+ */
 function runBeeline(extraArgs) {
   kerberosLoginIfPossible();
   const result = spawnSync('beeline', getBeelineArgs(extraArgs), { cwd: rootDir, encoding: 'utf8' });
@@ -876,6 +1393,11 @@ async function runBeelineAsync(extraArgs, options = {}) {
   return result.stdout;
 }
 
+/**
+ * 方法说明：清理 Beeline 输出中的引号、空白和表头内容。
+ * @param {*} line - 方法输入的 line 参数。
+ * @returns {*} - 方法执行结果。
+ */
 function cleanBeelineLine(line) {
   return String(line || '')
     .trim()
@@ -884,10 +1406,20 @@ function cleanBeelineLine(line) {
     .replace(/""/g, '"');
 }
 
+/**
+ * 方法说明：转义 SQL 字符串中的单引号。
+ * @param {*} value - 待处理的输入值。
+ * @returns {*} - 方法执行结果。
+ */
 function sqlString(value) {
   return String(value ?? '').replace(/'/g, "''");
 }
 
+/**
+ * 方法说明：查询指定数据库下的全部表名。
+ * @param {*} databaseName - 数据库名称。
+ * @returns {*} - 方法执行结果。
+ */
 function listDatabaseTables(databaseName) {
   validateIdentifier(databaseName, '库名');
   const command = process.env.HIVE_LIST_TABLES_COMMAND;
@@ -912,6 +1444,11 @@ function listDatabaseTables(databaseName) {
   return ['orders_detail', 'customer_profile', 'trade_partition_daily'];
 }
 
+/**
+ * 方法说明：读取 Shell 任务配置并转换为任务行。
+ * @param {*} filePath - 输入或输出文件路径。
+ * @returns {*} - 方法执行结果。
+ */
 function parseTaskConfig(filePath) {
   if (!fs.existsSync(filePath)) return [];
   return fs.readFileSync(filePath, 'utf8')
@@ -944,6 +1481,11 @@ function parseTaskConfig(filePath) {
     });
 }
 
+/**
+ * 方法说明：在 dry-run 模式下使用本地映射解析视图源表。
+ * @param {*} viewName - 方法输入的 viewName 参数。
+ * @returns {*} - 方法执行结果。
+ */
 function fallbackResolveView(viewName) {
   const mapPath = process.env.VIEW_SOURCE_MAP_JSON || path.join(rootDir, 'view-source-map.json');
   if (fs.existsSync(mapPath)) {
@@ -955,6 +1497,11 @@ function fallbackResolveView(viewName) {
   return [{ databaseName: normalizeIdentifierText(parts[0]), tableName: normalizeTableName(parts[1]) }];
 }
 
+/**
+ * 方法说明：解析视图库名和视图名并统一为小写。
+ * @param {*} viewName - 方法输入的 viewName 参数。
+ * @returns {*} - 方法执行结果。
+ */
 function normalizeViewName(viewName) {
   const viewDatabase = getViewDatabase();
   const normalized = String(viewName || '').trim().toLowerCase();
@@ -966,6 +1513,11 @@ function normalizeViewName(viewName) {
   return fullName;
 }
 
+/**
+ * 方法说明：去除 SQL 注释和字符串，降低表名误识别。
+ * @param {*} sql - 待执行的 SQL 文本。
+ * @returns {*} - 方法执行结果。
+ */
 function stripSqlForTableExtraction(sql) {
   return String(sql || '')
     .replace(/\r/g, '')
@@ -977,6 +1529,12 @@ function stripSqlForTableExtraction(sql) {
     .replace(/'(?:''|[^'])*'/g, ' ');
 }
 
+/**
+ * 方法说明：从视图 SQL 的 FROM 和 JOIN 中提取基础表。
+ * @param {*} sql - 待执行的 SQL 文本。
+ * @param {*} rootView - 方法输入的 rootView 参数。
+ * @returns {*} - 方法执行结果。
+ */
 function extractBaseTablesFromSql(sql, rootView) {
   const cleaned = stripSqlForTableExtraction(sql);
   const root = String(rootView || '').toLowerCase();
@@ -997,6 +1555,11 @@ function extractBaseTablesFromSql(sql, rootView) {
   return tables;
 }
 
+/**
+ * 方法说明：同步查询视图定义 SQL。
+ * @param {*} viewName - 方法输入的 viewName 参数。
+ * @returns {*} - 方法执行结果。
+ */
 function queryViewOriginText(viewName) {
   const [databaseName, tableName] = viewName.split('.', 2);
   const output = runBeeline(['-e',
@@ -1007,6 +1570,12 @@ function queryViewOriginText(viewName) {
   return originText;
 }
 
+/**
+ * 方法说明：异步查询视图定义 SQL 并写入任务日志。
+ * @param {*} viewName - 方法输入的 viewName 参数。
+ * @param {*} job - 当前后台任务对象。
+ * @returns {Promise<*>} - 方法执行结果。
+ */
 async function queryViewOriginTextAsync(viewName, job) {
   const [databaseName, tableName] = viewName.split('.', 2);
   const output = await runBeelineAsync(['-e',
@@ -1017,6 +1586,13 @@ async function queryViewOriginTextAsync(viewName, job) {
   return originText;
 }
 
+/**
+ * 方法说明：递归展开嵌套视图并得到基础源表。
+ * @param {*} rootView - 方法输入的 rootView 参数。
+ * @param {*} currentView - 方法输入的 currentView 参数。
+ * @param {*} visited - 方法输入的 visited 参数。
+ * @returns {*} - 方法执行结果。
+ */
 function expandViewSourcesNative(rootView, currentView, visited = new Set()) {
   if (visited.has(currentView)) throw new Error(`检测到视图循环依赖：${[...visited, currentView].join('|')}`);
   visited.add(currentView);
@@ -1035,25 +1611,57 @@ function expandViewSourcesNative(rootView, currentView, visited = new Set()) {
   return rows;
 }
 
-async function expandViewSourcesNativeAsync(rootView, currentView, job, visited = new Set()) {
+/**
+ * 方法说明：异步递归解析嵌套视图并缓存重复查询。
+ * @param {*} rootView - 方法输入的 rootView 参数。
+ * @param {*} currentView - 方法输入的 currentView 参数。
+ * @param {*} job - 当前后台任务对象。
+ * @param {*} visited - 方法输入的 visited 参数。
+ * @param {*} expansionCache - 方法输入的 expansionCache 参数。
+ * @returns {Promise<*>} - 方法执行结果。
+ */
+async function expandViewSourcesNativeAsync(rootView, currentView, job, visited = new Set(), expansionCache = new Map()) {
   if (visited.has(currentView)) throw new Error(`检测到视图循环依赖：${[...visited, currentView].join('|')}`);
-  visited.add(currentView);
+  if (expansionCache.has(currentView)) return expansionCache.get(currentView);
 
+  const nextVisited = new Set(visited);
+  nextVisited.add(currentView);
   const viewDatabase = String(process.env.VIEW_DATABASE || 'fdm').toLowerCase();
   const originText = await queryViewOriginTextAsync(currentView, job);
   const sourceTables = extractBaseTablesFromSql(originText, currentView);
   const rows = [];
   for (const source of sourceTables) {
     if (source.databaseName === viewDatabase) {
-      const nestedRows = await expandViewSourcesNativeAsync(rootView, `${source.databaseName}.${source.tableName}`, job, new Set(visited));
+      const nestedRows = await expandViewSourcesNativeAsync(
+        rootView,
+        `${source.databaseName}.${source.tableName}`,
+        job,
+        nextVisited,
+        expansionCache
+      );
       rows.push(...nestedRows);
     } else {
       rows.push(source);
     }
   }
-  return rows;
+  const seen = new Set();
+  const resolvedRows = rows.filter((source) => {
+    const key = `${source.databaseName}.${source.tableName}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+  expansionCache.set(currentView, resolvedRows);
+  return resolvedRows;
 }
 
+/**
+ * 方法说明：将视图源表解析结果转换为恢复清单行。
+ * @param {*} items - 方法输入的 items 参数。
+ * @param {*} fields - 解析后的表单字段。
+ * @param {*} inputPath - 方法输入的 inputPath 参数。
+ * @returns {*} - 方法执行结果。
+ */
 function buildRowsFromViewNative(items, fields, inputPath) {
   const rows = [];
   const recoverLines = [];
@@ -1101,10 +1709,19 @@ function buildRowsFromViewNative(items, fields, inputPath) {
   return { rows, configPath, viewInputPath: inputPath };
 }
 
+/**
+ * 方法说明：异步解析多个视图并生成恢复清单行。
+ * @param {*} items - 方法输入的 items 参数。
+ * @param {*} fields - 解析后的表单字段。
+ * @param {*} inputPath - 方法输入的 inputPath 参数。
+ * @param {*} job - 当前后台任务对象。
+ * @returns {Promise<*>} - 方法执行结果。
+ */
 async function buildRowsFromViewNativeAsync(items, fields, inputPath, job) {
   const rows = [];
   const recoverLines = [];
   const seen = new Set();
+  const expansionCache = new Map();
   const heartbeat = createCountProgressHeartbeat(job, '正在解析视图源表', {
     intervalMs: 5000,
     minProgress: 8,
@@ -1122,7 +1739,7 @@ async function buildRowsFromViewNativeAsync(items, fields, inputPath, job) {
       validateDateRange({ startDate, endDate });
       job.logs.push(`解析视图源表：${viewName}`);
       setCountProgress(job, 'running', Math.min(20, 8 + index), '正在解析视图源表。');
-      const sources = await expandViewSourcesNativeAsync(viewName, viewName, job);
+      const sources = await expandViewSourcesNativeAsync(viewName, viewName, job, new Set(), expansionCache);
       for (const source of sources) {
         const key = `${viewName}|${source.databaseName}|${source.tableName}|${startDate}|${endDate}`;
         if (seen.has(key)) continue;
@@ -1148,6 +1765,12 @@ async function buildRowsFromViewNativeAsync(items, fields, inputPath, job) {
   return { rows, configPath, viewInputPath: inputPath };
 }
 
+/**
+ * 方法说明：解析 Shell 视图脚本输出并构造恢复行。
+ * @param {*} items - 方法输入的 items 参数。
+ * @param {*} fields - 解析后的表单字段。
+ * @returns {*} - 方法执行结果。
+ */
 function buildRowsFromViewScript(items, fields) {
   const stamp = Date.now();
   const inputPath = path.join(generatedDir, `views-${stamp}.txt`);
@@ -1209,6 +1832,267 @@ function buildRowsFromViewScript(items, fields) {
   return { rows, configPath, viewInputPath: inputPath };
 }
 
+/**
+ * 方法说明：标准化视图源表查询输入行。
+ * @param {*} items - 方法输入的 items 参数。
+ * @returns {*} - 方法执行结果。
+ */
+function buildViewSourceInputRows(items) {
+  const rows = items.filter((item) => item.viewName).map((item, index) => {
+    const rawViewName = normalizeIdentifierText(item.viewName);
+    const startDate = normalizeDate(item.startDate);
+    const endDate = normalizeDate(item.endDate);
+    try {
+      validateOptionalDateRange({ startDate, endDate });
+      return makeRow({
+        id: `view-source-input-${index + 1}`,
+        viewName: normalizeViewName(rawViewName),
+        databaseName: '',
+        tableName: '',
+        startDate,
+        endDate
+      });
+    } catch (error) {
+      return markInvalidListRow(makeRow({
+        id: `view-source-input-${index + 1}`,
+        viewName: rawViewName,
+        databaseName: '',
+        tableName: '-',
+        startDate,
+        endDate
+      }), error);
+    }
+  });
+  if (!rows.length) throw new Error('视图源表查询清单中未识别到视图名');
+  return { rows, configPath: writeTaskConfig(rows, 'view-source-input') };
+}
+
+/**
+ * 方法说明：将视图源表查询行写入临时输入文件。
+ * @param {*} rows - 任务行数组。
+ * @returns {*} - 方法执行结果。
+ */
+function writeViewSourceInputFile(rows) {
+  const inputPath = path.join(generatedDir, `view-source-query-${Date.now()}.txt`);
+  const body = rows
+    .filter((row) => row.status !== 'failed')
+    .map((row) => [row.viewName, row.startDate || '', row.endDate || ''].join('|'))
+    .join('\n');
+  fs.writeFileSync(inputPath, `${body}\n`);
+  return inputPath;
+}
+
+/**
+ * 方法说明：构造视图源表查询失败行并保留原始输入。
+ * @param {*} row - 当前任务行对象。
+ * @param {*} error - 捕获到的错误对象。
+ * @returns {*} - 方法执行结果。
+ */
+function makeViewSourceFailureRow(row, error) {
+  return markInvalidListRow(makeRow({
+    ...row,
+    databaseName: '',
+    tableName: '-'
+  }), error);
+}
+
+/**
+ * 方法说明：并发执行视图源表 Node 查询并汇总结果。
+ * @param {*} inputRows - 标准化后的输入行数组。
+ * @param {*} job - 当前后台任务对象。
+ * @returns {Promise<*>} - 方法执行结果。
+ */
+async function buildViewSourceRowsNativeAsync(inputRows, job) {
+  const rows = inputRows.filter((row) => row.status === 'failed').map((row) => makeRow({
+    ...row,
+    progress: 100,
+    status: 'failed',
+    statusText: row.statusText || statusText.failed
+  }));
+  const failures = [];
+  const validRows = inputRows.filter((row) => row.status !== 'failed');
+  const expansionCache = new Map();
+  const resolvedRows = new Array(validRows.length);
+  const configured = Number.parseInt(process.env.VIEW_SOURCE_QUERY_CONCURRENCY || '4', 10);
+  const requestedConcurrency = Number.isInteger(configured) && configured > 0 ? Math.min(configured, 8) : 4;
+  const concurrency = Math.min(requestedConcurrency, validRows.length || 1);
+  let nextIndex = 0;
+
+  job.logs.push(`视图源表查询启用 ${concurrency} 路受控并发，并复用重复视图的解析结果。`);
+  sendJob(job);
+
+  /**
+   * 方法说明：从共享任务索引中领取下一组任务并执行该组任务。
+   * @returns {Promise<*>} - 方法执行结果。
+   */
+  async function worker() {
+    while (true) {
+      const index = nextIndex;
+      nextIndex += 1;
+      if (index >= validRows.length) return;
+      const inputRow = validRows[index];
+      inputRow.status = 'running';
+      inputRow.statusText = '正在查询视图源表';
+      inputRow.progress = Math.max(inputRow.progress || 0, 10);
+      sendJob(job);
+      try {
+        const sources = await expandViewSourcesNativeAsync(
+          inputRow.viewName,
+          inputRow.viewName,
+          job,
+          new Set(),
+          expansionCache
+        );
+        if (!sources.length) throw new Error(`未解析到视图源表：${inputRow.viewName}`);
+        resolvedRows[index] = sources.map((source, sourceIndex) => makeRow({
+          id: `view-source-${inputRow.id}-${sourceIndex + 1}`,
+          viewName: inputRow.viewName,
+          databaseName: normalizeIdentifierText(source.databaseName),
+          tableName: normalizeTableName(source.tableName),
+          startDate: inputRow.startDate || '',
+          endDate: inputRow.endDate || '',
+          progress: 100,
+          status: 'completed',
+          statusText: statusText.completed
+        }));
+        inputRow.progress = 100;
+        inputRow.status = 'completed';
+        inputRow.statusText = `已查询 ${sources.length} 个源表`;
+        sendJob(job);
+      } catch (error) {
+        const failureRow = makeViewSourceFailureRow(inputRow, error);
+        resolvedRows[index] = [failureRow];
+        failures.push({ row: failureRow, error: error.message });
+        inputRow.progress = 100;
+        inputRow.status = 'failed';
+        inputRow.statusText = `查询失败：${error.message}`;
+        sendJob(job);
+      }
+    }
+  }
+
+  await Promise.all(Array.from({ length: concurrency }, () => worker()));
+  for (const result of resolvedRows) {
+    if (result) rows.push(...result);
+  }
+
+  if (failures.length) {
+    const error = new Error(`Node 视图源表查询失败 ${failures.length} 行`);
+    error.failures = failures;
+    throw error;
+  }
+  return rows;
+}
+
+/**
+ * 方法说明：在未开启真实执行时生成视图源表模拟结果。
+ * @param {*} inputRows - 标准化后的输入行数组。
+ * @returns {*} - 方法执行结果。
+ */
+function buildViewSourceRowsDryRun(inputRows) {
+  return inputRows.flatMap((inputRow) => {
+    if (inputRow.status === 'failed') {
+      return [makeRow({
+        ...inputRow,
+        progress: 100,
+        status: 'failed',
+        statusText: inputRow.statusText || statusText.failed
+      })];
+    }
+    try {
+      const sources = fallbackResolveView(inputRow.viewName);
+      return sources.map((source, sourceIndex) => makeRow({
+        id: `view-source-dry-run-${inputRow.id}-${sourceIndex + 1}`,
+        viewName: inputRow.viewName,
+        databaseName: normalizeIdentifierText(source.databaseName),
+        tableName: normalizeTableName(source.tableName),
+        startDate: inputRow.startDate || '',
+        endDate: inputRow.endDate || '',
+        progress: 100,
+        status: 'completed',
+        statusText: statusText.completed
+      }));
+    } catch (error) {
+      return [makeViewSourceFailureRow(inputRow, error)];
+    }
+  });
+}
+
+/**
+ * 方法说明：解析 Shell 视图源表查询输出文件。
+ * @param {*} filePath - 输入或输出文件路径。
+ * @returns {*} - 方法执行结果。
+ */
+function parseViewSourceScriptOutput(filePath) {
+  if (!fs.existsSync(filePath)) return [];
+  return fs.readFileSync(filePath, 'utf8')
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line, index) => {
+      const fields = line.split('|');
+      if (fields.length < 5) return null;
+      return makeRow({
+        id: `view-source-shell-${index + 1}`,
+        viewName: normalizeIdentifierText(fields[0]),
+        databaseName: normalizeIdentifierText(fields[1]),
+        tableName: normalizeTableName(fields[2]),
+        startDate: normalizeDate(fields[3]),
+        endDate: normalizeDate(fields[4]),
+        progress: 100,
+        status: 'completed',
+        statusText: statusText.completed
+      });
+    })
+    .filter(Boolean);
+}
+
+/**
+ * 方法说明：执行视图源表 Shell 备用脚本并读取输出。
+ * @param {*} inputPath - 方法输入的 inputPath 参数。
+ * @param {*} outputPath - 输出文件路径。
+ * @returns {*} - 方法执行结果。
+ */
+function runViewSourceScriptFallback(inputPath, outputPath) {
+  const scriptPath = path.join(scriptDir, 'view_to_source_tables.sh');
+  if (!fs.existsSync(scriptPath)) throw new Error(`脚本不存在：${scriptPath}`);
+  const result = spawnSync('bash', [scriptPath, inputPath, outputPath], {
+    cwd: rootDir,
+    encoding: 'utf8',
+    env: { ...process.env, VIEW_SOURCE_QUERY: '1' }
+  });
+  // The script exits with 2 when some input views fail but still writes valid rows.
+  if (result.status !== 0 && result.status !== 2) {
+    throw new Error(`view_to_source_tables.sh 执行失败：${result.stderr || result.stdout || `退出码 ${result.status}`}`);
+  }
+  return {
+    rows: parseViewSourceScriptOutput(outputPath),
+    log: result.stderr || result.stdout || ''
+  };
+}
+
+/**
+ * 方法说明：把视图源表结果写入任务结果 Excel。
+ * @param {*} job - 当前后台任务对象。
+ * @returns {*} - 方法执行结果。
+ */
+function writeViewSourceSummaryWorkbook(job) {
+  const fileName = `view-source-summary-${job.id}.xlsx`;
+  const filePath = path.join(generatedDir, fileName);
+  fs.writeFileSync(filePath, makeViewSourceSummaryXlsx(job.rows));
+  job.summaryFile = {
+    fileName,
+    filePath,
+    url: `/api/jobs/${job.id}/view-source.xlsx`
+  };
+}
+
+/**
+ * 方法说明：根据清单模式读取字段、校验日期并生成任务行。
+ * @param {*} fields - 解析后的表单字段。
+ * @param {*} file - 上传文件对象。
+ * @returns {*} - 方法执行结果。
+ */
 function buildRows(fields, file) {
   const start = fields.startDate;
   const end = fields.endDate;
@@ -1233,6 +2117,10 @@ function buildRows(fields, file) {
 
   if (fields.mode === 'view') {
     return buildRowsFromViewScript(items, fields);
+  }
+
+  if (fields.mode === 'view-source') {
+    return buildViewSourceInputRows(items);
   }
 
   if (fields.mode === 'count') {
@@ -1265,6 +2153,11 @@ function buildRows(fields, file) {
   return { rows, configPath: writeTaskConfig(rows, fields.mode === 'package' ? 'package' : 'source') };
 }
 
+/**
+ * 方法说明：创建带默认状态和进度的标准任务行。
+ * @param {*} row - 当前任务行对象。
+ * @returns {*} - 方法执行结果。
+ */
 function makeRow(row) {
   return {
     viewName: '',
@@ -1292,10 +2185,20 @@ function writeTaskConfig(rows, mode, options = {}) {
   return configPath;
 }
 
+/**
+ * 方法说明：判断指定恢复方式是否应使用模拟执行。
+ * @param {*} restoreMode - 恢复方式。
+ * @returns {*} - 方法执行结果。
+ */
 function isDryRun(restoreMode) {
   return !isExecutionEnabled();
 }
 
+/**
+ * 方法说明：生成模拟执行的原因说明。
+ * @param {*} restoreMode - 恢复方式。
+ * @returns {*} - 方法执行结果。
+ */
 function getDryRunReason(restoreMode) {
   if (!isExecutionEnabled()) return '未开启 RECOVERY_EXECUTE=1，进入 dry-run 流程。';
   return '已开启真实 Node 后端执行。';
@@ -1321,10 +2224,20 @@ function sendJob(job, payload = {}) {
   for (const subscriber of job.subscribers) subscriber.write(`data: ${data}\n\n`);
 }
 
+/**
+ * 方法说明：等待指定毫秒数后继续执行。
+ * @param {*} ms - 等待毫秒数。
+ * @returns {*} - 方法执行结果。
+ */
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+/**
+ * 方法说明：创建并初始化一个后台任务对象。
+ * @param {*} rows - 任务行数组。
+ * @returns {*} - 方法执行结果。
+ */
 function createJob(rows) {
   return {
     id: `job-${Date.now()}`,
@@ -1352,20 +2265,40 @@ function createJob(rows) {
   };
 }
 
+/**
+ * 方法说明：返回任务中可参与恢复的有效行。
+ * @param {*} job - 当前后台任务对象。
+ * @returns {*} - 方法执行结果。
+ */
 function getRestoreRows(job) {
   return job.restoreRows || job.rows;
 }
 
+/**
+ * 方法说明：创建带有终止标记的任务取消错误。
+ * @param {*} message - 需要展示或写入日志的消息。
+ * @returns {*} - 方法执行结果。
+ */
 function makeCanceledError(message = '任务已终止') {
   const error = new Error(message);
   error.code = 'JOB_CANCELED';
   return error;
 }
 
+/**
+ * 方法说明：检查任务未被终止且仍允许继续执行。
+ * @param {*} job - 当前后台任务对象。
+ * @returns {*} - 方法执行结果。
+ */
 function assertJobActive(job) {
   if (job?.cancelRequested) throw makeCanceledError();
 }
 
+/**
+ * 方法说明：任务暂停时等待继续或终止信号。
+ * @param {*} job - 当前后台任务对象。
+ * @returns {Promise<*>} - 方法执行结果。
+ */
 async function waitIfPaused(job) {
   if (!job) return;
   while (job.paused && !job.cancelRequested) {
@@ -1374,11 +2307,22 @@ async function waitIfPaused(job) {
   assertJobActive(job);
 }
 
+/**
+ * 方法说明：在关键步骤检查暂停、终止和子进程状态。
+ * @param {*} job - 当前后台任务对象。
+ * @returns {Promise<*>} - 方法执行结果。
+ */
 async function jobCheckpoint(job) {
   assertJobActive(job);
   await waitIfPaused(job);
 }
 
+/**
+ * 方法说明：向后台 Shell 子进程发送终止信号。
+ * @param {*} child - 后台子进程对象。
+ * @param {*} signal - 进程终止信号。
+ * @returns {*} - 方法执行结果。
+ */
 function signalChildProcess(child, signal) {
   if (!child?.pid) return false;
   try {
@@ -1394,6 +2338,12 @@ function signalChildProcess(child, signal) {
   }
 }
 
+/**
+ * 方法说明：登记任务关联的后台子进程。
+ * @param {*} job - 当前后台任务对象。
+ * @param {*} child - 后台子进程对象。
+ * @returns {*} - 方法执行结果。
+ */
 function registerJobChild(job, child) {
   if (!job) return;
   if (!job.currentChildren) job.currentChildren = new Set();
@@ -1401,6 +2351,12 @@ function registerJobChild(job, child) {
   job.currentChild = child;
 }
 
+/**
+ * 方法说明：移除任务关联的后台子进程。
+ * @param {*} job - 当前后台任务对象。
+ * @param {*} child - 后台子进程对象。
+ * @returns {*} - 方法执行结果。
+ */
 function unregisterJobChild(job, child) {
   if (!job) return;
   job.currentChildren?.delete(child);
@@ -1409,23 +2365,43 @@ function unregisterJobChild(job, child) {
   }
 }
 
+/**
+ * 方法说明：返回任务当前关联的子进程集合。
+ * @param {*} job - 当前后台任务对象。
+ * @returns {*} - 方法执行结果。
+ */
 function getJobChildren(job) {
   if (job?.currentChildren?.size) return [...job.currentChildren];
   return job?.currentChild ? [job.currentChild] : [];
 }
 
+/**
+ * 方法说明：将执行中的任务行标记为暂停。
+ * @param {*} job - 当前后台任务对象。
+ * @returns {*} - 方法执行结果。
+ */
 function markRowsPaused(job) {
   for (const row of job.rows) {
     if (row.status === 'running') row.statusText = statusText.paused;
   }
 }
 
+/**
+ * 方法说明：将暂停的任务行恢复为执行中。
+ * @param {*} job - 当前后台任务对象。
+ * @returns {*} - 方法执行结果。
+ */
 function markRowsResumed(job) {
   for (const row of job.rows) {
     if (row.status === 'running' && row.statusText === statusText.paused) row.statusText = statusText.running;
   }
 }
 
+/**
+ * 方法说明：终止任务、子进程和未完成的任务行。
+ * @param {*} job - 当前后台任务对象。
+ * @returns {*} - 方法执行结果。
+ */
 function markJobCanceled(job) {
   job.status = 'canceled';
   job.cancelRequested = true;
@@ -1460,6 +2436,15 @@ function createProgressHeartbeat(job, rows, label, options = {}) {
   }, intervalMs);
 }
 
+/**
+ * 方法说明：在进度心跳保护下执行可能耗时的异步操作。
+ * @param {*} job - 当前后台任务对象。
+ * @param {*} rows - 任务行数组。
+ * @param {*} label - 状态或日志标签。
+ * @param {*} maxProgress - 该阶段允许达到的最大进度。
+ * @param {*} work - 需要执行的异步工作函数。
+ * @returns {Promise<*>} - 方法执行结果。
+ */
 async function runWithProgressHeartbeat(job, rows, label, maxProgress, work) {
   await jobCheckpoint(job);
   const heartbeat = createProgressHeartbeat(job, rows, label, { maxProgress });
@@ -1470,11 +2455,26 @@ async function runWithProgressHeartbeat(job, rows, label, maxProgress, work) {
   }
 }
 
+/**
+ * 方法说明：判断 HDFS put 错误是否适合重试。
+ * @param {*} error - 捕获到的错误对象。
+ * @returns {*} - 方法执行结果。
+ */
 function isRetryableHdfsPutError(error) {
   return /LeaseExpiredException|No lease|_COPYING_|AlreadyBeingCreatedException|could only be replicated|DataStreamer Exception/i
     .test(String(error?.message || error || ''));
 }
 
+/**
+ * 方法说明：按配置重试 HDFS 上传并必要时清理目标目录。
+ * @param {*} job - 当前后台任务对象。
+ * @param {*} row - 当前任务行对象。
+ * @param {*} putArgs - 批量上传命令参数。
+ * @param {*} cleanupArgs - 上传失败后的清理命令参数。
+ * @param {*} label - 状态或日志标签。
+ * @param {*} maxProgress - 该阶段允许达到的最大进度。
+ * @returns {Promise<*>} - 方法执行结果。
+ */
 async function runHdfsPutWithRetry(job, row, putArgs, cleanupArgs, label, maxProgress = 88) {
   const maxAttempts = Number(process.env.HDFS_PUT_RETRY_COUNT || 3);
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
@@ -1500,6 +2500,15 @@ async function runHdfsPutWithRetry(job, row, putArgs, cleanupArgs, label, maxPro
   }
 }
 
+/**
+ * 方法说明：优先批量上传多个分区，异常时逐分区上传。
+ * @param {*} job - 当前后台任务对象。
+ * @param {*} row - 当前任务行对象。
+ * @param {*} localPartitionDirs - 本地分区目录数组。
+ * @param {*} hdfsPartitionDirs - 目标 HDFS 分区目录数组。
+ * @param {*} tableRoot - 表的 HDFS 根目录。
+ * @returns {Promise<*>} - 方法执行结果。
+ */
 async function runHdfsBatchPutThenPartitionFallback(job, row, localPartitionDirs, hdfsPartitionDirs, tableRoot) {
   try {
     job.logs.push(`优先批量上传 ${localPartitionDirs.length} 个分区目录 -> ${tableRoot}/`);
@@ -1532,6 +2541,12 @@ async function runHdfsBatchPutThenPartitionFallback(job, row, localPartitionDirs
   }
 }
 
+/**
+ * 方法说明：拆分外部命令输出并追加到任务日志。
+ * @param {*} job - 当前后台任务对象。
+ * @param {*} chunk - 方法输入的 chunk 参数。
+ * @returns {*} - 方法执行结果。
+ */
 function appendLog(job, chunk) {
   const text = chunk.toString('utf8');
   for (const line of text.split(/\r?\n/).map((item) => item.trim()).filter(Boolean)) {
@@ -1541,6 +2556,12 @@ function appendLog(job, chunk) {
   sendJob(job);
 }
 
+/**
+ * 方法说明：寻找下一个尚未结束的 Shell 任务行。
+ * @param {*} job - 当前后台任务对象。
+ * @param {*} fromIndex - 方法输入的 fromIndex 参数。
+ * @returns {*} - 方法执行结果。
+ */
 function nextShellRowIndex(job, fromIndex = -1) {
   const shellRows = job.shellRows || getRestoreRows(job);
   const startIndex = Math.max(0, fromIndex + 1);
@@ -1553,6 +2574,11 @@ function nextShellRowIndex(job, fromIndex = -1) {
   return -1;
 }
 
+/**
+ * 方法说明：选择 Shell 心跳应更新的当前任务行。
+ * @param {*} job - 当前后台任务对象。
+ * @returns {*} - 方法执行结果。
+ */
 function getShellHeartbeatRows(job) {
   const shellRows = job.shellRows || getRestoreRows(job);
   const activeIndex = Number.isInteger(job.activeShellRowIndex) ? job.activeShellRowIndex : nextShellRowIndex(job);
@@ -1564,6 +2590,12 @@ function getShellHeartbeatRows(job) {
   return nextIndex >= 0 ? [shellRows[nextIndex]] : [];
 }
 
+/**
+ * 方法说明：根据 Shell 日志行更新任务行状态和进度。
+ * @param {*} job - 当前后台任务对象。
+ * @param {*} line - 方法输入的 line 参数。
+ * @returns {*} - 方法执行结果。
+ */
 function updateRowsFromScriptLine(job, line) {
   const shellRows = job.shellRows || getRestoreRows(job);
   const lineNo = Number(/配置文件第\s+(\d+)\s+行/.exec(line)?.[1] || /视图列表第\s+(\d+)\s+行/.exec(line)?.[1]);
@@ -1587,6 +2619,13 @@ function updateRowsFromScriptLine(job, line) {
   }
 }
 
+/**
+ * 方法说明：根据恢复方式组装 Shell 备用脚本参数。
+ * @param {*} restoreMode - 恢复方式。
+ * @param {*} configPath - 任务配置文件路径。
+ * @param {*} options - 可选配置对象。
+ * @returns {*} - 方法执行结果。
+ */
 function getRestoreArgs(restoreMode, configPath, options) {
   const scriptPath = path.join(scriptDir, scriptMap[restoreMode]);
   const sourceLabel = options.sourceType === 'unmasked' ? '未脱敏数据恢复源路径' : '脱敏数据恢复源路径';
@@ -1604,12 +2643,23 @@ function getRestoreArgs(restoreMode, configPath, options) {
   throw new Error(`未知恢复方式：${restoreMode}`);
 }
 
+/**
+ * 方法说明：异步启动 Shell 备用恢复脚本并转发日志。
+ * @param {*} job - 当前后台任务对象。
+ * @param {*} restoreMode - 恢复方式。
+ * @param {*} configPath - 任务配置文件路径。
+ * @param {*} options - 可选配置对象。
+ * @returns {Promise<*>} - 方法执行结果。
+ */
 async function executeRestoreScript(job, restoreMode, configPath, options) {
   const args = getRestoreArgs(restoreMode, configPath, options);
   job.activeShellRowIndex = nextShellRowIndex(job);
   await jobCheckpoint(job);
   await new Promise((resolve, reject) => {
-    const child = spawn('bash', args, { cwd: rootDir, detached: true, env: process.env });
+    const childEnv = restoreMode === 'cross' && options.sourceDatabase
+      ? { ...process.env, SOURCE_DATABASE: getSourceDatabase(options.sourceDatabase) }
+      : process.env;
+    const child = spawn('bash', args, { cwd: rootDir, detached: true, env: childEnv });
     registerJobChild(job, child);
     const heartbeat = createProgressHeartbeat(job, [], 'shell 备用方案执行中', {
       maxProgress: 88,
@@ -1636,6 +2686,14 @@ async function executeRestoreScript(job, restoreMode, configPath, options) {
   });
 }
 
+/**
+ * 方法说明：更新单行任务的进度和状态文本。
+ * @param {*} job - 当前后台任务对象。
+ * @param {*} row - 当前任务行对象。
+ * @param {*} progress - 方法输入的 progress 参数。
+ * @param {*} text - 状态文本。
+ * @returns {*} - 方法执行结果。
+ */
 function markRowProgress(job, row, progress, text = statusText.running) {
   row.status = 'running';
   row.statusText = text;
@@ -1643,6 +2701,12 @@ function markRowProgress(job, row, progress, text = statusText.running) {
   sendJob(job);
 }
 
+/**
+ * 方法说明：将单行任务标记为完成并发送状态。
+ * @param {*} job - 当前后台任务对象。
+ * @param {*} row - 当前任务行对象。
+ * @returns {*} - 方法执行结果。
+ */
 function markRowCompleted(job, row) {
   row.progress = 100;
   row.status = 'completed';
@@ -1650,6 +2714,14 @@ function markRowCompleted(job, row) {
   sendJob(job);
 }
 
+/**
+ * 方法说明：记录单行错误并跳过当前行继续后续任务。
+ * @param {*} job - 当前后台任务对象。
+ * @param {*} row - 当前任务行对象。
+ * @param {*} error - 捕获到的错误对象。
+ * @param {*} actionLabel - 任务类型或日志动作名称。
+ * @returns {*} - 方法执行结果。
+ */
 function markRowFailedAndContinue(job, row, error, actionLabel = '恢复') {
   if (error?.code === 'JOB_CANCELED') throw error;
   row.progress = Math.max(Number(row.progress || 0), 30);
@@ -1659,6 +2731,12 @@ function markRowFailedAndContinue(job, row, error, actionLabel = '恢复') {
   sendJob(job);
 }
 
+/**
+ * 方法说明：确定跨库恢复目标库并规范化清单行。
+ * @param {*} rows - 任务行数组。
+ * @param {*} targetDatabase - 目标数据库名称。
+ * @returns {*} - 方法执行结果。
+ */
 function effectiveCrossRows(rows, targetDatabase) {
   const normalizedTargetDatabase = normalizeIdentifierText(targetDatabase);
   return rows.map((row) => ({
@@ -1668,12 +2746,24 @@ function effectiveCrossRows(rows, targetDatabase) {
   }));
 }
 
+/**
+ * 方法说明：一次查询恢复清单涉及的分区信息和表路径。
+ * @param {*} rows - 任务行数组。
+ * @returns {*} - 方法执行结果。
+ */
 function buildTableMetadata(rows) {
   const partitionedTables = queryPartitionedTables(rows);
   const tableLocations = getTableLocations(rows);
   return { partitionedTables, tableLocations };
 }
 
+/**
+ * 方法说明：从批量元数据缓存中读取指定表路径。
+ * @param {*} metadata - 方法输入的 metadata 参数。
+ * @param {*} row - 当前任务行对象。
+ * @param {*} databaseName - 数据库名称。
+ * @returns {*} - 方法执行结果。
+ */
 function getMetadataLocation(metadata, row, databaseName = row.databaseName) {
   const key = `${databaseName}.${row.tableName}`;
   const tablePath = metadata.tableLocations.get(key);
@@ -1682,6 +2772,14 @@ function getMetadataLocation(metadata, row, databaseName = row.databaseName) {
   return tablePath;
 }
 
+/**
+ * 方法说明：按配置分区字段复制本地数据到中转目录。
+ * @param {*} row - 当前任务行对象。
+ * @param {*} sourceRoot - 本地源根目录。
+ * @param {*} stageRoot - 本地中转根目录。
+ * @param {*} job - 当前后台任务对象。
+ * @returns {*} - 方法执行结果。
+ */
 function copyLocalPartitionsToStage(row, sourceRoot, stageRoot, job) {
   const partitionColumn = getPartitionColumn();
   const preparedDates = [];
@@ -1711,6 +2809,15 @@ function copyLocalPartitionsToStage(row, sourceRoot, stageRoot, job) {
   return preparedDates;
 }
 
+/**
+ * 方法说明：删除目标旧分区、批量上传本地分区并修复元数据。
+ * @param {*} row - 当前任务行对象。
+ * @param {*} tablePath - Hive 表对应的 HDFS 路径。
+ * @param {*} localPartitionDirs - 本地分区目录数组。
+ * @param {*} hdfsPartitionDirs - 目标 HDFS 分区目录数组。
+ * @param {*} job - 当前后台任务对象。
+ * @returns {Promise<*>} - 方法执行结果。
+ */
 async function hdfsReplacePartitionsFromLocal(row, tablePath, localPartitionDirs, hdfsPartitionDirs, job) {
   if (!localPartitionDirs.length) return;
   job.logs.push(`删除 ${hdfsPartitionDirs.length} 个旧 HDFS 分区目录`);
@@ -1720,18 +2827,21 @@ async function hdfsReplacePartitionsFromLocal(row, tablePath, localPartitionDirs
   const tableRoot = tablePath.replace(/\/+$/, '');
   await runHdfsCommandAsync(['-mkdir', '-p', tableRoot], { job, onData: (chunk) => appendLog(job, chunk) });
   await runHdfsBatchPutThenPartitionFallback(job, row, localPartitionDirs, hdfsPartitionDirs, tableRoot);
-  await runWithProgressHeartbeat(job, [row], '修复 Hive 分区中', 92, () => (
-    runBeelineAsync(['-e', `USE ${row.databaseName};MSCK REPAIR TABLE ${row.tableName}`], { job, onData: (chunk) => appendLog(job, chunk) })
-  ));
+  await repairHdfsPartitionsAsync(job, row, hdfsPartitionDirs, getPartitionColumn(), process.env.PARTITION_REPAIR_MODE);
   job.logs.push(`${row.databaseName}.${row.tableName} 分区修复完成`);
 }
 
+/**
+ * 方法说明：执行连续日期恢复的 Node 内置流程。
+ * @param {*} job - 当前后台任务对象。
+ * @param {*} options - 可选配置对象。
+ * @returns {Promise<*>} - 方法执行结果。
+ */
 async function executeContinuousNative(job, options) {
   const restoreRows = getRestoreRows(job);
   const metadata = buildTableMetadata(restoreRows);
   const partitionColumn = getPartitionColumn();
-  for (let index = 0; index < restoreRows.length; index += 1) {
-    const row = restoreRows[index];
+  const processRow = async (row) => {
     try {
       await jobCheckpoint(job);
       validateIdentifier(row.databaseName, '库名');
@@ -1746,7 +2856,7 @@ async function executeContinuousNative(job, options) {
         row.status = 'completed';
         row.statusText = statusText.completed;
         sendJob(job);
-        continue;
+        return;
       }
 
       const key = tableKey(row);
@@ -1756,7 +2866,7 @@ async function executeContinuousNative(job, options) {
         row.status = 'completed';
         row.statusText = statusText.completed;
         sendJob(job);
-        continue;
+        return;
       }
 
       markRowProgress(job, row, 52, '替换 HDFS 分区');
@@ -1769,9 +2879,17 @@ async function executeContinuousNative(job, options) {
     } catch (error) {
       markRowFailedAndContinue(job, row, error, '连续时间段恢复');
     }
-  }
+  };
+  await executeRestoreRowsByTable(job, restoreRows, processRow, '连续时间段恢复');
 }
 
+/**
+ * 方法说明：筛选日期范围内存在且有文件的本地分区。
+ * @param {*} row - 当前任务行对象。
+ * @param {*} sourceRoot - 本地源根目录。
+ * @param {*} job - 当前后台任务对象。
+ * @returns {*} - 方法执行结果。
+ */
 function getValidLocalPartitionDirs(row, sourceRoot, job) {
   const partitionColumn = getPartitionColumn();
   const sourceBase = ensureLocalDirectory(sourceRoot, '分区表源根目录');
@@ -1793,6 +2911,12 @@ function getValidLocalPartitionDirs(row, sourceRoot, job) {
   return { sourcePartitions, hdfsDates };
 }
 
+/**
+ * 方法说明：执行单日期恢复并兼容分区表和非分区表。
+ * @param {*} job - 当前后台任务对象。
+ * @param {*} options - 可选配置对象。
+ * @returns {Promise<*>} - 方法执行结果。
+ */
 async function executeSingleNative(job, options) {
   const restoreRows = getRestoreRows(job);
   const metadata = buildTableMetadata(restoreRows);
@@ -1800,7 +2924,7 @@ async function executeSingleNative(job, options) {
   ensureLocalDirectory(options.sourceRoot, '分区表源根目录');
   ensureLocalDirectory(options.nonPartitionSourceRoot, '非分区表源根目录');
 
-  for (const row of restoreRows) {
+  const processRow = async (row) => {
     try {
       await jobCheckpoint(job);
       validateIdentifier(row.databaseName, '库名');
@@ -1818,7 +2942,7 @@ async function executeSingleNative(job, options) {
           row.status = 'completed';
           row.statusText = statusText.completed;
           sendJob(job);
-          continue;
+          return;
         }
         markRowProgress(job, row, 52, '上传分区数据');
         const hdfsPartitions = hdfsDates.map((statDate) => `${tablePath.replace(/\/+$/, '')}/${partitionColumn}=${statDate}`);
@@ -1832,7 +2956,7 @@ async function executeSingleNative(job, options) {
           row.status = 'completed';
           row.statusText = statusText.completed;
           sendJob(job);
-          continue;
+          return;
         }
         markRowProgress(job, row, 52, '上传非分区表数据');
         job.logs.push(`删除非分区表旧 HDFS 数据：${tablePath.replace(/\/+$/, '')}/*`);
@@ -1855,11 +2979,12 @@ async function executeSingleNative(job, options) {
     } catch (error) {
       markRowFailedAndContinue(job, row, error, '单日期恢复');
     }
-  }
+  };
+  await executeRestoreRowsByTable(job, restoreRows, processRow, '单日期恢复');
 }
 
-async function executeCrossNative(job) {
-  const sourceDatabase = getSourceDatabase();
+async function executeCrossNative(job, options = {}) {
+  const sourceDatabase = getSourceDatabase(options.sourceDatabase);
   const partitionColumn = getPartitionColumn();
   const targetRows = getRestoreRows(job);
   const partitionedCache = new Map();
@@ -1879,7 +3004,7 @@ async function executeCrossNative(job) {
 
   job.logs.push(`跨库恢复源库：${sourceDatabase}；目标库优先使用清单库名，清单为空时使用页面跨库目标库。`);
 
-  for (const row of targetRows) {
+  const processRow = async (row) => {
     try {
       await jobCheckpoint(job);
       validateIdentifier(row.databaseName, '目标库名');
@@ -1890,6 +3015,7 @@ async function executeCrossNative(job) {
 
       const sourceKey = `${sourceDatabase}.${row.tableName}`;
       const targetKey = tableKey(row);
+      job.logs.push(`跨库目标映射：${sourceKey} -> ${targetKey}`);
       if (!isPartitionedCached(sourceDatabase, row.tableName)) throw new Error(`${sourceKey} 不是分区表，无法跨库按日期复制`);
       if (!isPartitionedCached(row.databaseName, row.tableName)) throw new Error(`${targetKey} 不是分区表，无法跨库按日期复制`);
 
@@ -1902,51 +3028,99 @@ async function executeCrossNative(job) {
 
       const sourcePartitions = [];
       const targetPartitions = [];
-      for (const statDate of enumerateDates(row.startDate, row.endDate)) {
-        await jobCheckpoint(job);
-        const sourcePartition = `${sourceTablePath.replace(/\/+$/, '')}/${partitionColumn}=${statDate}`;
-        const targetPartition = `${targetTablePath.replace(/\/+$/, '')}/${partitionColumn}=${statDate}`;
-        if (hdfsTestDir(sourcePartition)) {
-          sourcePartitions.push(sourcePartition);
-          targetPartitions.push(targetPartition);
-        } else {
-          job.logs.push(`警告：源分区目录不存在，跳过日期 ${statDate}：${sourcePartition}`);
+      const dates = enumerateDates(row.startDate, row.endDate);
+      const requestedTargetPartitions = dates.map((statDate) => `${targetTablePath.replace(/\/+$/, '')}/${partitionColumn}=${statDate}`);
+      const listedDates = await listHdfsPartitionDatesAsync(sourceTablePath, partitionColumn, job);
+      let availableDates = listedDates
+        ? new Set(dates.filter((statDate) => listedDates.has(statDate)))
+        : null;
+      const shouldFallbackToDateCheck = !availableDates || (dates.length > 0 && availableDates.size === 0);
+      if (!shouldFallbackToDateCheck) {
+        job.logs.push(`批量检查源分区完成：日期范围 ${dates.length} 天，可复制 ${availableDates.size} 天`);
+      } else {
+        job.logs.push(availableDates
+          ? '批量分区列表未命中日期范围，回退逐日期检查。'
+          : '批量检查源分区未返回可解析结果，回退逐日期检查。');
+        availableDates = new Set();
+        for (const statDate of dates) {
+          await jobCheckpoint(job);
+          const sourcePartition = `${sourceTablePath.replace(/\/+$/, '')}/${partitionColumn}=${statDate}`;
+          if (hdfsTestDir(sourcePartition)) availableDates.add(statDate);
+          else job.logs.push(`警告：源分区目录不存在，跳过日期 ${statDate}：${sourcePartition}`);
         }
+        job.logs.push(`逐日期检查源分区完成：日期范围 ${dates.length} 天，可复制 ${availableDates.size} 天`);
+      }
+      for (const statDate of dates) {
+        if (!availableDates.has(statDate)) continue;
+        sourcePartitions.push(`${sourceTablePath.replace(/\/+$/, '')}/${partitionColumn}=${statDate}`);
+        targetPartitions.push(`${targetTablePath.replace(/\/+$/, '')}/${partitionColumn}=${statDate}`);
       }
 
       if (!sourcePartitions.length) {
-        job.logs.push(`警告：${sourceKey} 在指定日期范围内没有可复制的源分区，跳过`);
+        job.logs.push(`警告：${sourceKey} 在指定日期范围内没有可复制的源分区，先清理目标日期范围内的旧分区`);
+        await runWithProgressHeartbeat(job, [row], '清理目标旧分区中', 70, () => (
+          runHdfsCommandAsync(['-rm', '-r', '-f', ...requestedTargetPartitions], {
+            job,
+            onData: (chunk) => appendLog(job, chunk)
+          })
+        ));
         row.progress = 100;
         row.status = 'completed';
         row.statusText = statusText.completed;
         sendJob(job);
-        continue;
+        return;
       }
 
       markRowProgress(job, row, 52, '复制跨库分区');
-      await runWithProgressHeartbeat(job, [row], '删除目标 HDFS 分区中', 70, () => (
-        runHdfsCommandAsync(['-rm', '-r', '-f', ...targetPartitions], { job, onData: (chunk) => appendLog(job, chunk) })
+      await runWithProgressHeartbeat(job, [row], '删除目标日期范围旧分区中', 70, () => (
+        runHdfsCommandAsync(['-rm', '-r', '-f', ...requestedTargetPartitions], {
+          job,
+          onData: (chunk) => appendLog(job, chunk)
+        })
       ));
-      await runHdfsCommandAsync(['-mkdir', '-p', ...targetPartitions], { job, onData: (chunk) => appendLog(job, chunk) });
-      for (let index = 0; index < sourcePartitions.length; index += 1) {
-        await jobCheckpoint(job);
-        job.logs.push(`复制分区数据：${sourcePartitions[index]} -> ${targetPartitions[index]}/`);
-        await runWithProgressHeartbeat(job, [row], `复制跨库分区 ${index + 1}/${sourcePartitions.length}`, 88, async () => {
-          await runHdfsCommandAsync(['-cp', `${sourcePartitions[index].replace(/\/+$/, '')}/*`, `${targetPartitions[index].replace(/\/+$/, '')}/`], { job, onData: (chunk) => appendLog(job, chunk) });
-          row.progress = Math.max(row.progress || 0, Math.min(90, Math.round(52 + ((index + 1) / sourcePartitions.length) * 38)));
-          sendJob(job);
-        });
-      }
-      await runWithProgressHeartbeat(job, [row], '修复 Hive 分区中', 92, () => (
-        runBeelineAsync(['-e', `USE ${row.databaseName};MSCK REPAIR TABLE ${row.tableName}`], { job, onData: (chunk) => appendLog(job, chunk) })
-      ));
+      const targetTableRoot = targetTablePath.replace(/\/+$/, '');
+      await runHdfsCommandAsync(['-mkdir', '-p', targetTableRoot], { job, onData: (chunk) => appendLog(job, chunk) });
+      await copyCrossPartitionsAsync(job, row, sourcePartitions, targetPartitions, targetTableRoot);
+  await repairHdfsPartitionsAsync(job, row, targetPartitions, partitionColumn, process.env.CROSS_REPAIR_MODE);
       markRowCompleted(job, row);
     } catch (error) {
       markRowFailedAndContinue(job, row, error, '跨库数据恢复');
     }
+  };
+
+  const groupsByTarget = new Map();
+  for (const row of targetRows) {
+    const key = `${row.databaseName || ''}.${row.tableName || ''}`;
+    if (!groupsByTarget.has(key)) groupsByTarget.set(key, []);
+    groupsByTarget.get(key).push(row);
   }
+  const groups = [...groupsByTarget.values()];
+  const concurrency = Math.min(getCrossTableConcurrency(), groups.length || 1);
+  job.logs.push(`跨库恢复启用 ${concurrency} 路表级并发，同一目标表内任务保持串行。`);
+  sendJob(job);
+  let nextGroupIndex = 0;
+  /**
+   * 方法说明：从共享任务索引中领取下一组任务并执行该组任务。
+   * @returns {Promise<*>} - 方法执行结果。
+   */
+  async function worker() {
+    while (true) {
+      const groupIndex = nextGroupIndex;
+      nextGroupIndex += 1;
+      if (groupIndex >= groups.length) return;
+      for (const row of groups[groupIndex]) await processRow(row);
+    }
+  }
+  await Promise.all(Array.from({ length: concurrency }, () => worker()));
 }
 
+/**
+ * 方法说明：按恢复方式分派到对应 Node 内置执行器。
+ * @param {*} job - 当前后台任务对象。
+ * @param {*} restoreMode - 恢复方式。
+ * @param {*} options - 可选配置对象。
+ * @returns {Promise<*>} - 方法执行结果。
+ */
 async function executeRestoreNative(job, restoreMode, options) {
   if (restoreMode === 'continuous') return executeContinuousNative(job, options);
   if (restoreMode === 'single') return executeSingleNative(job, options);
@@ -1954,11 +3128,24 @@ async function executeRestoreNative(job, restoreMode, options) {
   throw new Error(`未知恢复方式：${restoreMode}`);
 }
 
+/**
+ * 方法说明：判断 Node 错误是否允许切换 Shell 备用方案。
+ * @param {*} error - 捕获到的错误对象。
+ * @returns {*} - 方法执行结果。
+ */
 function shouldFallbackToShell(error) {
   const message = String(error?.message || error || '');
   return !/(目标库与源库相同|日期范围不合法|开始日期晚于|不合法|不是分区表|无法跨库|未查询到表路径|无法判断|源表和目标表 HDFS 路径相同)/.test(message);
 }
 
+/**
+ * 方法说明：执行 Node 恢复，失败后按条件切换 Shell。
+ * @param {*} job - 当前后台任务对象。
+ * @param {*} restoreMode - 恢复方式。
+ * @param {*} configPath - 任务配置文件路径。
+ * @param {*} options - 可选配置对象。
+ * @returns {Promise<*>} - 方法执行结果。
+ */
 async function executeRestoreNativeWithShellFallback(job, restoreMode, configPath, options) {
   try {
     job.logs.push('开始执行 Node 后端恢复逻辑。');
@@ -1977,22 +3164,45 @@ async function executeRestoreNativeWithShellFallback(job, restoreMode, configPat
   }
 }
 
+/**
+ * 方法说明：在 dry-run 模式生成全表模拟数据量。
+ * @param {*} row - 当前任务行对象。
+ * @returns {*} - 方法执行结果。
+ */
 function fallbackCount(row) {
   const seed = `${row.databaseName}.${row.tableName}.${row.startDate}.${row.endDate}`;
   return [...seed].reduce((sum, char) => sum + char.charCodeAt(0), 0) * 17;
 }
 
+/**
+ * 方法说明：在 dry-run 模式生成单日期模拟数据量。
+ * @param {*} row - 当前任务行对象。
+ * @param {*} statDate - 日期分区值。
+ * @returns {*} - 方法执行结果。
+ */
 function fallbackCountForDate(row, statDate) {
   const seed = `${row.databaseName}.${row.tableName}.${statDate}`;
   return [...seed].reduce((sum, char) => sum + char.charCodeAt(0), 0) * 7;
 }
 
+/**
+ * 方法说明：根据日期和偏移天数计算新日期。
+ * @param {*} dateText - 方法输入的 dateText 参数。
+ * @param {*} days - 方法输入的 days 参数。
+ * @returns {*} - 方法执行结果。
+ */
 function addDays(dateText, days) {
   const date = new Date(`${dateText}T00:00:00Z`);
   date.setUTCDate(date.getUTCDate() + days);
   return date.toISOString().slice(0, 10);
 }
 
+/**
+ * 方法说明：枚举开始日期到结束日期之间的所有日期。
+ * @param {*} startDate - 开始日期。
+ * @param {*} endDate - 结束日期。
+ * @returns {*} - 方法执行结果。
+ */
 function enumerateDates(startDate, endDate) {
   const dates = [];
   if (!/^\d{4}-\d{2}-\d{2}$/.test(startDate || '') || !/^\d{4}-\d{2}-\d{2}$/.test(endDate || '')) return dates;
@@ -2004,6 +3214,14 @@ function enumerateDates(startDate, endDate) {
   return dates;
 }
 
+/**
+ * 方法说明：构造单表单日期的数据量统计行。
+ * @param {*} row - 当前任务行对象。
+ * @param {*} statDate - 日期分区值。
+ * @param {*} count - 数据量或计数值。
+ * @param {*} index - 当前数组下标。
+ * @returns {*} - 方法执行结果。
+ */
 function makeSummaryItem(row, statDate, count, index) {
   return {
     id: `${row.id || `${row.databaseName}.${row.tableName}`}-${statDate}-${index}`,
@@ -2019,10 +3237,22 @@ function makeSummaryItem(row, statDate, count, index) {
   };
 }
 
+/**
+ * 方法说明：筛选数据量为零的日期分区结果。
+ * @param {*} summary - 数据量统计结果数组。
+ * @returns {*} - 方法执行结果。
+ */
 function zeroCountSummary(summary) {
   return summary.filter((item) => item.count != null && Number(item.count) === 0);
 }
 
+/**
+ * 方法说明：为失败或跳过的恢复行生成回查结果。
+ * @param {*} row - 当前任务行对象。
+ * @param {*} error - 捕获到的错误对象。
+ * @param {*} index - 当前数组下标。
+ * @returns {*} - 方法执行结果。
+ */
 function makeSkippedSummaryItems(row, error, index) {
   const dates = enumerateDates(row.startDate, row.endDate);
   const statDates = dates.length ? dates : ['ALL'];
@@ -2033,6 +3263,11 @@ function makeSkippedSummaryItems(row, error, index) {
   }));
 }
 
+/**
+ * 方法说明：将数据量回查明细写入结果 Excel。
+ * @param {*} job - 当前后台任务对象。
+ * @returns {*} - 方法执行结果。
+ */
 function writeCountSummaryWorkbook(job) {
   const fileName = `count-summary-${job.id}.xlsx`;
   const filePath = path.join(generatedDir, fileName);
@@ -2044,6 +3279,14 @@ function writeCountSummaryWorkbook(job) {
   };
 }
 
+/**
+ * 方法说明：统一更新数据量查询任务状态和总体进度。
+ * @param {*} job - 当前后台任务对象。
+ * @param {*} status - 方法输入的 status 参数。
+ * @param {*} progress - 方法输入的 progress 参数。
+ * @param {*} text - 状态文本。
+ * @returns {*} - 方法执行结果。
+ */
 function setCountProgress(job, status, progress, text) {
   job.countStatus = status;
   const nextProgress = Math.max(0, Math.min(100, Number(progress) || 0));
@@ -2053,6 +3296,12 @@ function setCountProgress(job, status, progress, text) {
   sendJob(job);
 }
 
+/**
+ * 方法说明：根据查询方式构造数据量查询对象。
+ * @param {*} inputRows - 标准化后的输入行数组。
+ * @param {*} queryMode - 数据量查询方式。
+ * @returns {*} - 方法执行结果。
+ */
 function buildCountQueryRows(inputRows, queryMode) {
   if (queryMode === 'view-count') {
     const viewDatabase = getViewDatabase();
@@ -2087,6 +3336,13 @@ function buildCountQueryRows(inputRows, queryMode) {
   throw new Error(`未知数据量查询方式：${queryMode}`);
 }
 
+/**
+ * 方法说明：异步构造查询对象并解析视图源表。
+ * @param {*} inputRows - 标准化后的输入行数组。
+ * @param {*} queryMode - 数据量查询方式。
+ * @param {*} job - 当前后台任务对象。
+ * @returns {Promise<*>} - 方法执行结果。
+ */
 async function buildCountQueryRowsAsync(inputRows, queryMode, job) {
   if (queryMode !== 'view-count' || !isExecutionEnabled()) {
     return buildCountQueryRows(inputRows, queryMode);
@@ -2109,6 +3365,11 @@ async function buildCountQueryRowsAsync(inputRows, queryMode, job) {
   return buildRowsFromViewNativeAsync(items, { startDate: '', endDate: '' }, inputPath, job);
 }
 
+/**
+ * 方法说明：为一批表生成大小写不敏感的 SQL 条件。
+ * @param {*} rows - 任务行数组。
+ * @returns {*} - 方法执行结果。
+ */
 function buildTablePredicate(rows) {
   const pairs = new Set(rows.map((row) => `${row.databaseName}.${row.tableName}`));
   return [...pairs].map((pair) => {
@@ -2119,6 +3380,11 @@ function buildTablePredicate(rows) {
   }).join(' OR ');
 }
 
+/**
+ * 方法说明：按批次大小拆分表条件以控制 SQL 长度。
+ * @param {*} rows - 任务行数组。
+ * @returns {*} - 方法执行结果。
+ */
 function buildTablePredicateBatches(rows) {
   const uniqueRows = [...new Map(rows.map((row) => [
     `${row.databaseName}.${row.tableName}`,
@@ -2135,6 +3401,12 @@ function buildTablePredicateBatches(rows) {
   return predicates.filter(Boolean);
 }
 
+/**
+ * 方法说明：将批量查询 SQL 写入 generated 目录。
+ * @param {*} prefix - 方法输入的 prefix 参数。
+ * @param {*} statements - 方法输入的 statements 参数。
+ * @returns {*} - 方法执行结果。
+ */
 function writeGeneratedSqlFile(prefix, statements) {
   generatedSqlSequence += 1;
   const sqlPath = path.join(generatedDir, `${prefix}-${Date.now()}-${generatedSqlSequence}.sql`);
@@ -2146,6 +3418,14 @@ function writeGeneratedSqlFile(prefix, statements) {
   return sqlPath;
 }
 
+/**
+ * 方法说明：按配置将任务行拆分为多个批次。
+ * @param {*} rows - 任务行数组。
+ * @param {*} configuredSize - 方法输入的 configuredSize 参数。
+ * @param {*} defaultSize - 方法输入的 defaultSize 参数。
+ * @param {*} maxSize - 方法输入的 maxSize 参数。
+ * @returns {*} - 方法执行结果。
+ */
 function splitRowsIntoBatches(rows, configuredSize, defaultSize, maxSize) {
   const batchSize = Number.isInteger(configuredSize) && configuredSize > 0
     ? Math.min(configuredSize, maxSize)
@@ -2157,16 +3437,32 @@ function splitRowsIntoBatches(rows, configuredSize, defaultSize, maxSize) {
   return batches;
 }
 
+/**
+ * 方法说明：读取数据量查询批次大小配置。
+ * @param {*} rows - 任务行数组。
+ * @returns {*} - 方法执行结果。
+ */
 function getCountQueryBatches(rows) {
   const configuredSize = Number.parseInt(process.env.HIVE_COUNT_BATCH_SIZE || '200', 10);
   return splitRowsIntoBatches(rows, configuredSize, 200, 500);
 }
 
+/**
+ * 方法说明：读取数据量查询并发配置并限制上限。
+ * @returns {*} - 方法执行结果。
+ */
 function getCountQueryConcurrency() {
   const configured = Number.parseInt(process.env.HIVE_COUNT_CONCURRENCY || '4', 10);
   return Number.isInteger(configured) && configured > 0 ? Math.min(configured, 8) : 4;
 }
 
+/**
+ * 方法说明：并发执行数据量查询批次并汇总失败信息。
+ * @param {*} job - 当前后台任务对象。
+ * @param {*} batches - 查询批次数组。
+ * @param {*} partitionedTables - 分区表键集合。
+ * @returns {Promise<*>} - 方法执行结果。
+ */
 async function executeCountBatchesWithConcurrency(job, batches, partitionedTables) {
   const concurrency = Math.min(getCountQueryConcurrency(), batches.length || 1);
   const results = new Array(batches.length);
@@ -2177,6 +3473,10 @@ async function executeCountBatchesWithConcurrency(job, batches, partitionedTable
   job.logs.push(`数据量查询启用受控并发：${concurrency} 个批次同时执行。`);
   sendJob(job);
 
+  /**
+   * 方法说明：从共享任务索引中领取下一组任务并执行该组任务。
+   * @returns {Promise<*>} - 方法执行结果。
+   */
   async function worker() {
     while (true) {
       await jobCheckpoint(job);
@@ -2208,6 +3508,11 @@ async function executeCountBatchesWithConcurrency(job, batches, partitionedTable
   return results;
 }
 
+/**
+ * 方法说明：构造查询表分区字段的 SQL 语句。
+ * @param {*} rows - 任务行数组。
+ * @returns {*} - 方法执行结果。
+ */
 function buildPartitionMetadataStatements(rows) {
   return buildTablePredicateBatches(rows).map((predicate) => [
     "SELECT concat(database_name,'.',table_name,'|',cast(count(1) as string))",
@@ -2217,6 +3522,11 @@ function buildPartitionMetadataStatements(rows) {
   ].join(' '));
 }
 
+/**
+ * 方法说明：同步批量查询分区表集合。
+ * @param {*} rows - 任务行数组。
+ * @returns {*} - 方法执行结果。
+ */
 function queryPartitionedTables(rows) {
   const statements = buildPartitionMetadataStatements(rows);
   if (!statements.length) return new Set();
@@ -2231,6 +3541,12 @@ function queryPartitionedTables(rows) {
   return partitioned;
 }
 
+/**
+ * 方法说明：异步批量查询分区表集合并记录进度。
+ * @param {*} rows - 任务行数组。
+ * @param {*} job - 当前后台任务对象。
+ * @returns {Promise<*>} - 方法执行结果。
+ */
 async function queryPartitionedTablesAsync(rows, job) {
   const statements = buildPartitionMetadataStatements(rows);
   if (!statements.length) return new Set();
@@ -2247,6 +3563,11 @@ async function queryPartitionedTablesAsync(rows, job) {
   return partitioned;
 }
 
+/**
+ * 方法说明：同步批量查询表的 HDFS 路径。
+ * @param {*} rows - 任务行数组。
+ * @returns {*} - 方法执行结果。
+ */
 function getTableLocations(rows) {
   const predicates = buildTablePredicateBatches(rows);
   if (!predicates.length) return new Map();
@@ -2271,6 +3592,44 @@ function getTableLocations(rows) {
   return locations;
 }
 
+/**
+ * 方法说明：异步批量查询表的 HDFS 路径并记录进度。
+ * @param {*} rows - 任务行数组。
+ * @param {*} job - 当前后台任务对象。
+ * @returns {Promise<*>} - 方法执行结果。
+ */
+async function getTableLocationsAsync(rows, job) {
+  const predicates = buildTablePredicateBatches(rows);
+  if (!predicates.length) return new Map();
+  const locationColumn = process.env.TABLE_LOCATION_COLUMN || 'table_location';
+  validateIdentifier(locationColumn, '表路径字段名');
+  const statements = predicates.map((predicate) => [
+    `SELECT concat(database_name,'.',table_name,'|',${locationColumn})`,
+    'FROM system.tables_v',
+    `WHERE ${predicate}`
+  ].join(' '));
+  const sqlPath = writeGeneratedSqlFile('table-locations', statements);
+  job.logs.push(`HDFS 表路径查询已写入 SQL 文件，共 ${statements.length} 个批次：${sqlPath}`);
+  sendJob(job);
+  const output = await runBeelineAsync(['-f', sqlPath], { job });
+  const locations = new Map();
+  for (const rawLine of output.split(/\r?\n/)) {
+    const line = cleanBeelineLine(rawLine);
+    const separator = line.indexOf('|');
+    if (separator <= 0) continue;
+    const tableKey = line.slice(0, separator);
+    const tableLocation = line.slice(separator + 1);
+    if (tableKey && tableLocation) locations.set(tableKey, tableLocation);
+  }
+  return locations;
+}
+
+/**
+ * 方法说明：校验目标路径始终位于允许的根目录内。
+ * @param {*} rootPath - 方法输入的 rootPath 参数。
+ * @param {*} targetPath - 方法输入的 targetPath 参数。
+ * @returns {*} - 方法执行结果。
+ */
 function ensureInsideRoot(rootPath, targetPath) {
   const resolvedRoot = path.resolve(rootPath);
   const resolvedTarget = path.resolve(targetPath);
@@ -2279,13 +3638,30 @@ function ensureInsideRoot(rootPath, targetPath) {
   }
 }
 
-function runHdfsGet(sourcePath, localTargetPath, packageRoot) {
+/**
+ * 方法说明：异步执行 HDFS get 将数据下载到本地。
+ * @param {*} sourcePath - 方法输入的 sourcePath 参数。
+ * @param {*} localTargetPath - 方法输入的 localTargetPath 参数。
+ * @param {*} packageRoot - 数据文件打包根目录。
+ * @param {*} job - 当前后台任务对象。
+ * @returns {Promise<*>} - 方法执行结果。
+ */
+async function runHdfsGetAsync(sourcePath, localTargetPath, packageRoot, job) {
   ensureInsideRoot(packageRoot, localTargetPath);
   fs.mkdirSync(path.dirname(localTargetPath), { recursive: true });
   if (fs.existsSync(localTargetPath)) fs.rmSync(localTargetPath, { recursive: true, force: true });
-  runHdfsCommand(['-get', sourcePath, localTargetPath]);
+  await runHdfsCommandAsync(['-get', sourcePath, localTargetPath], {
+    job,
+    onData: (chunk) => appendLog(job, chunk)
+  });
 }
 
+/**
+ * 方法说明：根据表类型和日期范围构造打包路径。
+ * @param {*} row - 当前任务行对象。
+ * @param {*} options - 可选配置对象。
+ * @returns {*} - 方法执行结果。
+ */
 function buildPackageCopies(row, options) {
   const tableKey = `${row.databaseName}.${row.tableName}`;
   const tableLocation = options.tableLocations.get(tableKey);
@@ -2310,6 +3686,86 @@ function buildPackageCopies(row, options) {
   }));
 }
 
+/**
+ * 方法说明：同步筛选实际存在的 HDFS 打包路径。
+ * @param {*} copies - 方法输入的 copies 参数。
+ * @param {*} job - 当前后台任务对象。
+ * @returns {*} - 方法执行结果。
+ */
+function filterExistingPackageCopies(copies, job) {
+  const available = [];
+  for (const copy of copies) {
+    // Non-partitioned tables use the table root directly and must still be downloaded.
+    if (copy.statDate === 'ALL' || hdfsTestDir(copy.sourcePath)) {
+      available.push(copy);
+      continue;
+    }
+    job.logs.push(`提示：HDFS 分区目录不存在，已跳过：${copy.sourcePath}`);
+  }
+  return available;
+}
+
+/**
+ * 方法说明：解析 HDFS ls 输出中的目录名称。
+ * @param {*} output - 方法输入的 output 参数。
+ * @returns {*} - 方法执行结果。
+ */
+function hdfsListedBasenames(output) {
+  const names = new Set();
+  for (const rawLine of String(output || '').split(/\r?\n/)) {
+    const fields = rawLine.trim().split(/\s+/).filter(Boolean);
+    if (!fields.length || fields[0] === 'Found') continue;
+    const hdfsPath = fields[fields.length - 1].replace(/\/+$/, '');
+    const basename = hdfsPath.slice(hdfsPath.lastIndexOf('/') + 1);
+    if (basename) names.add(basename);
+  }
+  return names;
+}
+
+/**
+ * 方法说明：批量检查并筛选存在的 HDFS 分区目录。
+ * @param {*} copies - 方法输入的 copies 参数。
+ * @param {*} row - 当前任务行对象。
+ * @param {*} job - 当前后台任务对象。
+ * @returns {Promise<*>} - 方法执行结果。
+ */
+async function filterExistingPackageCopiesAsync(copies, row, job) {
+  const partitionCopies = copies.filter((copy) => copy.statDate !== 'ALL');
+  if (!partitionCopies.length) return copies;
+
+  const partitionColumn = process.env.PARTITION_COLUMN || 'tx_dt';
+  validateIdentifier(partitionColumn, '分区字段名');
+  const marker = `/${partitionColumn}=`;
+  const markerIndex = partitionCopies[0].sourcePath.indexOf(marker);
+  const tableRoot = markerIndex >= 0 ? partitionCopies[0].sourcePath.slice(0, markerIndex) : '';
+  if (!tableRoot) return filterExistingPackageCopies(copies, job);
+
+  row.statusText = `批量检查 ${partitionCopies.length} 个 HDFS 分区目录`;
+  row.progress = Math.max(row.progress || 0, 18);
+  sendJob(job);
+  const result = await runHdfsCommandAsync(['-ls', tableRoot], { job, allowFailure: true });
+  if (result.status !== 0) {
+    job.logs.push(`提示：无法列出 HDFS 表目录，范围内分区将全部跳过：${tableRoot}`);
+    return [];
+  }
+
+  const existing = hdfsListedBasenames(result.stdout);
+  const available = partitionCopies.filter((copy) => {
+    const basename = copy.sourcePath.slice(copy.sourcePath.lastIndexOf('/') + 1);
+    return existing.has(basename);
+  });
+  const skipped = partitionCopies.length - available.length;
+  job.logs.push(`${row.databaseName}.${row.tableName} 分区目录检查完成：存在 ${available.length} 个，跳过 ${skipped} 个。`);
+  return available;
+}
+
+/**
+ * 方法说明：解析 Node 直连 Hive 返回的分区数据量。
+ * @param {*} output - 方法输入的 output 参数。
+ * @param {*} rows - 任务行数组。
+ * @param {*} partitionedTables - 分区表键集合。
+ * @returns {*} - 方法执行结果。
+ */
 function parseDirectCountOutput(output, rows, partitionedTables) {
   const byIndexAndDate = new Map();
   for (const rawLine of output.split(/\r?\n/)) {
@@ -2332,6 +3788,12 @@ function parseDirectCountOutput(output, rows, partitionedTables) {
   });
 }
 
+/**
+ * 方法说明：解析 Shell 数据量查询结果文件。
+ * @param {*} outputPath - 输出文件路径。
+ * @param {*} rows - 任务行数组。
+ * @returns {*} - 方法执行结果。
+ */
 function parseCountScriptOutput(outputPath, rows) {
   if (!fs.existsSync(outputPath)) return [];
   const byIndex = new Map();
@@ -2363,6 +3825,11 @@ function parseCountScriptOutput(outputPath, rows) {
   return summary;
 }
 
+/**
+ * 方法说明：同步执行数据量查询并汇总结果。
+ * @param {*} rows - 任务行数组。
+ * @returns {*} - 方法执行结果。
+ */
 function queryCountsDirect(rows) {
   const partitionedTables = queryPartitionedTables(rows);
   const summaries = [];
@@ -2381,6 +3848,12 @@ function queryCountsDirect(rows) {
   };
 }
 
+/**
+ * 方法说明：构造分区表和非分区表的数据量 SQL。
+ * @param {*} rows - 任务行数组。
+ * @param {*} partitionedTables - 分区表键集合。
+ * @returns {*} - 方法执行结果。
+ */
 function buildCountSqlStatements(rows, partitionedTables) {
   const partitionColumn = process.env.PARTITION_COLUMN || 'tx_dt';
   validateIdentifier(partitionColumn, '分区字段名');
@@ -2405,6 +3878,14 @@ function buildCountSqlStatements(rows, partitionedTables) {
   });
 }
 
+/**
+ * 方法说明：异步执行一批数据量 SQL 并解析结果。
+ * @param {*} job - 当前后台任务对象。
+ * @param {*} rows - 任务行数组。
+ * @param {*} partitionedTables - 分区表键集合。
+ * @param {*} label - 状态或日志标签。
+ * @returns {Promise<*>} - 方法执行结果。
+ */
 async function executeCountBatchAsync(job, rows, partitionedTables, label) {
   const statements = buildCountSqlStatements(rows, partitionedTables);
   const sqlPath = writeGeneratedSqlFile('count-direct', statements);
@@ -2464,6 +3945,11 @@ function createCountProgressHeartbeat(job, label, options = {}) {
   }, intervalMs);
 }
 
+/**
+ * 方法说明：异步执行 Node 直连 Hive 的数据量批量查询，并在失败时拆分重试。
+ * @param {*} job - 当前后台任务对象。
+ * @returns {Promise<*>} - 方法执行结果。
+ */
 async function queryCountsDirectAsync(job) {
   const rows = job.countRows || job.rows;
   const heartbeat = createCountProgressHeartbeat(job, '数据量查询执行中', {
@@ -2547,6 +4033,13 @@ async function queryCounts(job, configPath, options = {}) {
   return true;
 }
 
+/**
+ * 方法说明：运行恢复任务并在完成后触发数据回查。
+ * @param {*} job - 当前后台任务对象。
+ * @param {*} restoreMode - 恢复方式。
+ * @param {*} options - 可选配置对象。
+ * @returns {Promise<*>} - 方法执行结果。
+ */
 async function runJob(job, restoreMode, options) {
   const dryRun = isDryRun(restoreMode);
   if (restoreMode === 'cross') {
@@ -2640,6 +4133,12 @@ async function runJob(job, restoreMode, options) {
   sendJob(job);
 }
 
+/**
+ * 方法说明：查询元数据、下载 HDFS 文件并生成打包结果。
+ * @param {*} job - 当前后台任务对象。
+ * @param {*} options - 可选配置对象。
+ * @returns {Promise<*>} - 方法执行结果。
+ */
 async function runPackageJob(job, options) {
   const dryRun = !isExecutionEnabled();
   const configPath = writeTaskConfig(job.rows, 'package');
@@ -2670,30 +4169,62 @@ async function runPackageJob(job, options) {
         row.statusText = dates.length ? `已模拟 ${dates.length} 个日期` : statusText.completed;
       }
     } else {
-      const partitionedTables = queryPartitionedTables(job.rows);
-      const tableLocations = getTableLocations(job.rows);
-      job.logs.push('已查询表分区信息和 HDFS 表路径。');
-      sendJob(job);
-
       for (const row of job.rows) {
         row.status = 'running';
-        row.statusText = '查询 HDFS 路径';
-        row.progress = 12;
+        row.statusText = '查询分区元数据';
+        row.progress = Math.max(row.progress || 0, 10);
+      }
+      job.logs.push('开始异步查询表分区信息，请等待 Hive 返回。');
+      sendJob(job);
+      const partitionedTables = await queryPartitionedTablesAsync(job.rows, job);
+      job.logs.push(`表分区信息查询完成，共识别 ${partitionedTables.size} 张分区表。`);
+      for (const row of job.rows) {
+        row.statusText = '查询 HDFS 表路径';
+        row.progress = Math.max(row.progress || 0, 14);
+      }
+      sendJob(job);
+      const tableLocations = await getTableLocationsAsync(job.rows, job);
+      job.logs.push(`HDFS 表路径查询完成，共获取 ${tableLocations.size} 张表路径。`);
+      sendJob(job);
+
+      for (let rowIndex = 0; rowIndex < job.rows.length; rowIndex += 1) {
+        const row = job.rows[rowIndex];
+        row.status = 'running';
+        row.statusText = `准备打包（${rowIndex + 1}/${job.rows.length}）`;
+        row.progress = Math.max(row.progress || 0, 16);
         sendJob(job);
 
-        const copies = buildPackageCopies(row, {
+        const allCopies = buildPackageCopies(row, {
           packageRoot: options.packageRoot,
           partitionedTables,
           tableLocations
         });
+        const copies = await filterExistingPackageCopiesAsync(allCopies, row, job);
+        if (copies.length !== allCopies.length) {
+          job.logs.push(`${row.databaseName}.${row.tableName} 已跳过 ${allCopies.length - copies.length} 个不存在的 HDFS 分区目录。`);
+          sendJob(job);
+        }
+        if (!copies.length) {
+          row.progress = 100;
+          row.status = 'completed';
+          row.statusText = '指定日期范围没有可打包分区，已跳过';
+          sendJob(job);
+          continue;
+        }
         row.statusText = `打包 ${copies.length} 个路径`;
 
         for (let index = 0; index < copies.length; index += 1) {
           const copy = copies[index];
-          job.logs.push(`hdfs dfs -get ${copy.sourcePath} ${copy.localTargetPath}`);
-          runHdfsGet(copy.sourcePath, copy.localTargetPath, options.packageRoot);
+          const downloadLabel = copy.statDate === 'ALL' ? '非分区表文件下载中' : `下载分区 ${copy.statDate}`;
+          row.statusText = downloadLabel;
+          row.progress = Math.max(row.progress || 0, Math.min(94, 20 + Math.round((index / copies.length) * 74)));
+          job.logs.push(`开始 ${downloadLabel}：${copy.sourcePath}`);
+          sendJob(job);
+          await runWithProgressHeartbeat(job, [row], downloadLabel, 96, () => (
+            runHdfsGetAsync(copy.sourcePath, copy.localTargetPath, options.packageRoot, job)
+          ));
           row.progress = Math.min(96, Math.round(20 + ((index + 1) / copies.length) * 76));
-          row.statusText = copy.statDate === 'ALL' ? '非分区表打包中' : `打包 ${copy.statDate}`;
+          row.statusText = `已完成 ${index + 1}/${copies.length} 个路径`;
           sendJob(job);
         }
 
@@ -2721,6 +4252,76 @@ async function runPackageJob(job, options) {
   sendJob(job);
 }
 
+/**
+ * 方法说明：解析视图源表并生成可下载的 Excel 结果。
+ * @param {*} job - 当前后台任务对象。
+ * @returns {Promise<*>} - 方法执行结果。
+ */
+async function runViewSourceQueryJob(job) {
+  const inputRows = job.rows;
+  const inputPath = writeViewSourceInputFile(inputRows);
+  job.configPath = inputPath;
+  job.logs.push(`视图源表查询清单：${inputPath}`);
+  sendJob(job);
+
+  try {
+    let resultRows;
+    if (!isExecutionEnabled()) {
+      resultRows = buildViewSourceRowsDryRun(inputRows);
+      job.logs.push('未开启 RECOVERY_EXECUTE=1，使用本地视图源表映射 dry-run。');
+    } else try {
+      job.logs.push('开始通过 Node 后端解析视图源表。');
+      sendJob(job);
+      resultRows = await buildViewSourceRowsNativeAsync(inputRows, job);
+      job.logs.push('Node 后端视图源表查询完成。');
+    } catch (nativeError) {
+      job.logs.push(`Node 视图源表查询失败，准备调用 shell 备用方案：${nativeError.message}`);
+      sendJob(job);
+      const outputPath = path.join(generatedDir, `view-source-query-${job.id}.txt`);
+      const fallback = runViewSourceScriptFallback(inputPath, outputPath);
+      resultRows = fallback.rows;
+      const fallbackFailures = nativeError.failures || [];
+      const existingKeys = new Set(resultRows.map((row) => `${row.viewName}|${row.databaseName}|${row.tableName}|${row.startDate}|${row.endDate}`));
+      for (const failure of fallbackFailures) {
+        const row = failure.row;
+        const key = `${row.viewName}|${row.databaseName}|${row.tableName}|${row.startDate}|${row.endDate}`;
+        if (!existingKeys.has(key)) resultRows.push(row);
+      }
+      if (fallback.log.trim()) job.logs.push(fallback.log.trim());
+      job.logs.push('shell 视图源表查询备用方案执行完成。');
+    }
+
+    job.rows = resultRows.map((row) => makeRow({
+      ...row,
+      progress: 100,
+      status: row.status === 'failed' ? 'failed' : 'completed',
+      statusText: row.status === 'failed' ? (row.statusText || statusText.failed) : statusText.completed
+    }));
+    writeViewSourceSummaryWorkbook(job);
+    job.status = job.rows.some((row) => row.status === 'failed') ? 'failed' : 'completed';
+    job.logs.push(job.status === 'completed'
+      ? '视图源表查询完成，Excel 明细已生成。'
+      : '视图源表查询完成，存在失败行，失败行已写入 Excel。');
+  } catch (error) {
+    job.status = 'failed';
+    job.logs.push(`视图源表查询任务失败：${error.message}`);
+    job.rows = inputRows.map((row) => makeRow({
+      ...row,
+      progress: 100,
+      status: 'failed',
+      statusText: statusText.failed,
+      error: error.message
+    }));
+  }
+  sendJob(job);
+}
+
+/**
+ * 方法说明：执行视图或贴源表数据量查询。
+ * @param {*} job - 当前后台任务对象。
+ * @param {*} queryMode - 数据量查询方式。
+ * @returns {Promise<*>} - 方法执行结果。
+ */
 async function runCountQueryJob(job, queryMode) {
   try {
     job.logs.push(queryMode === 'view-count' ? '开始视图数据量查询，先解析视图源表。' : '开始贴源表数据量查询。');
@@ -2771,6 +4372,12 @@ async function runCountQueryJob(job, queryMode) {
   sendJob(job);
 }
 
+/**
+ * 方法说明：处理文件上传、清单解析和对象展示请求。
+ * @param {*} req - HTTP 请求对象。
+ * @param {*} res - HTTP 响应对象。
+ * @returns {Promise<*>} - 方法执行结果。
+ */
 async function handleParse(req, res) {
   try {
     const body = await readBody(req);
@@ -2785,10 +4392,12 @@ async function handleParse(req, res) {
         ...getExecutionMeta()
       },
       logs: [
-        `已读取 ${rows.length} 个${fields.mode === 'package' ? '打包对象' : fields.mode === 'count' ? '查询对象' : '恢复对象'}。`,
+        `已读取 ${rows.length} 个${fields.mode === 'package' ? '打包对象' : fields.mode === 'count' || fields.mode === 'view-source' ? '查询对象' : '恢复对象'}。`,
         ...(invalidRows.length ? [`其中 ${invalidRows.length} 行清单校验失败，后续恢复和数据回查将自动跳过这些行。`] : []),
         fields.mode === 'view'
           ? '已根据视图名解析源表并生成恢复配置。'
+          : fields.mode === 'view-source'
+            ? '已读取视图源表查询清单，请执行查询。'
           : fields.mode === 'package'
             ? '已生成数据文件打包配置。'
             : fields.mode === 'count'
@@ -2802,11 +4411,18 @@ async function handleParse(req, res) {
   }
 }
 
+/**
+ * 方法说明：校验恢复请求并创建后台恢复任务。
+ * @param {*} req - HTTP 请求对象。
+ * @param {*} res - HTTP 响应对象。
+ * @returns {Promise<*>} - 方法执行结果。
+ */
 async function handleRestore(req, res) {
   try {
     const payload = JSON.parse((await readBody(req)).toString('utf8') || '{}');
     if (!Array.isArray(payload.rows) || !payload.rows.length) throw new Error('没有可恢复的行');
     const validRows = payload.rows.filter((row) => row.status !== 'failed');
+    const sourceDatabase = payload.restoreMode === 'cross' ? getSourceDatabase(payload.sourceDatabase) : '';
     if (payload.restoreMode === 'cross') {
       const missingTargetDatabaseRows = validRows.filter((row) => !row.databaseName);
       if (missingTargetDatabaseRows.length && !payload.targetDatabase) {
@@ -2822,6 +4438,7 @@ async function handleRestore(req, res) {
     const sourcePathConfig = resolveSourceRoot(payload.sourceType);
     runJob(job, payload.restoreMode, {
       targetDatabase: payload.targetDatabase,
+      sourceDatabase,
       sourceRoot: sourcePathConfig.sourceRoot,
       sourceType: sourcePathConfig.sourceType,
       nonPartitionSourceRoot: sourcePathConfig.nonPartitionSourceRoot,
@@ -2832,6 +4449,12 @@ async function handleRestore(req, res) {
   }
 }
 
+/**
+ * 方法说明：校验打包请求并创建后台打包任务。
+ * @param {*} req - HTTP 请求对象。
+ * @param {*} res - HTTP 响应对象。
+ * @returns {Promise<*>} - 方法执行结果。
+ */
 async function handlePackage(req, res) {
   try {
     const payload = JSON.parse((await readBody(req)).toString('utf8') || '{}');
@@ -2859,6 +4482,12 @@ async function handlePackage(req, res) {
   }
 }
 
+/**
+ * 方法说明：校验数据量查询请求并创建后台查询任务。
+ * @param {*} req - HTTP 请求对象。
+ * @param {*} res - HTTP 响应对象。
+ * @returns {Promise<*>} - 方法执行结果。
+ */
 async function handleCountQuery(req, res) {
   try {
     const payload = JSON.parse((await readBody(req)).toString('utf8') || '{}');
@@ -2882,6 +4511,36 @@ async function handleCountQuery(req, res) {
   }
 }
 
+/**
+ * 方法说明：校验视图源表查询请求并创建后台任务。
+ * @param {*} req - HTTP 请求对象。
+ * @param {*} res - HTTP 响应对象。
+ * @returns {Promise<*>} - 方法执行结果。
+ */
+async function handleViewSourceQuery(req, res) {
+  try {
+    const payload = JSON.parse((await readBody(req)).toString('utf8') || '{}');
+    if (!Array.isArray(payload.rows) || !payload.rows.length) throw new Error('没有可查询的视图');
+    if (payload.rows.some((row) => row.status !== 'failed' && !row.viewName)) {
+      throw new Error('视图源表查询要求每行必须包含视图名');
+    }
+    const job = createJob(payload.rows);
+    jobs.set(job.id, job);
+    sendJson(res, 200, { jobId: job.id });
+    setTimeout(() => {
+      runViewSourceQueryJob(job);
+    }, 50);
+  } catch (error) {
+    sendJson(res, 400, { error: error.message });
+  }
+}
+
+/**
+ * 方法说明：返回恢复清单 Excel 模板。
+ * @param {*} req - HTTP 请求对象。
+ * @param {*} res - HTTP 响应对象。
+ * @returns {*} - 方法执行结果。
+ */
 function handleTemplateDownload(req, res) {
   const buffer = makeRecoveryTemplateXlsx();
   sendBuffer(res, 200, buffer, {
@@ -2891,6 +4550,13 @@ function handleTemplateDownload(req, res) {
   });
 }
 
+/**
+ * 方法说明：返回数据量回查明细 Excel。
+ * @param {*} req - HTTP 请求对象。
+ * @param {*} res - HTTP 响应对象。
+ * @param {*} jobId - 任务编号。
+ * @returns {*} - 方法执行结果。
+ */
 function handleCountSummaryDownload(req, res, jobId) {
   const job = jobs.get(jobId);
   if (!job?.summaryFile || !fs.existsSync(job.summaryFile.filePath)) {
@@ -2904,6 +4570,34 @@ function handleCountSummaryDownload(req, res, jobId) {
   });
 }
 
+/**
+ * 方法说明：返回视图源表查询明细 Excel。
+ * @param {*} req - HTTP 请求对象。
+ * @param {*} res - HTTP 响应对象。
+ * @param {*} jobId - 任务编号。
+ * @returns {*} - 方法执行结果。
+ */
+function handleViewSourceSummaryDownload(req, res, jobId) {
+  const job = jobs.get(jobId);
+  if (!job?.summaryFile || !fs.existsSync(job.summaryFile.filePath)) {
+    return sendJson(res, 404, { error: '视图源表查询明细文件不存在或尚未生成' });
+  }
+  const buffer = fs.readFileSync(job.summaryFile.filePath);
+  return sendBuffer(res, 200, buffer, {
+    'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    'Content-Disposition': "attachment; filename=\"view-source-summary.xlsx\"; filename*=UTF-8''%E8%A7%86%E5%9B%BE%E6%BA%90%E8%A1%A8%E6%9F%A5%E8%AF%A2.xlsx",
+    'Cache-Control': 'no-store'
+  });
+}
+
+/**
+ * 方法说明：执行任务暂停、继续或终止控制。
+ * @param {*} req - HTTP 请求对象。
+ * @param {*} res - HTTP 响应对象。
+ * @param {*} jobId - 任务编号。
+ * @param {*} action - 任务控制动作。
+ * @returns {*} - 方法执行结果。
+ */
 function handleJobControl(req, res, jobId, action) {
   const job = jobs.get(jobId);
   if (!job) return sendJson(res, 404, { error: '任务不存在或已过期' });
@@ -2943,6 +4637,13 @@ function handleJobControl(req, res, jobId, action) {
   return sendJson(res, 400, { error: '未知任务操作' });
 }
 
+/**
+ * 方法说明：以 SSE 形式持续推送任务状态和日志。
+ * @param {*} req - HTTP 请求对象。
+ * @param {*} res - HTTP 响应对象。
+ * @param {*} jobId - 任务编号。
+ * @returns {*} - 方法执行结果。
+ */
 function handleEvents(req, res, jobId) {
   const job = jobs.get(jobId);
   if (!job) {
@@ -2971,10 +4672,14 @@ const server = http.createServer(async (req, res) => {
   if ((req.method === 'GET' || req.method === 'HEAD') && /^\/api\/jobs\/[^/]+\/count-summary\.xlsx$/.test(url.pathname)) {
     return handleCountSummaryDownload(req, res, url.pathname.split('/')[3]);
   }
+  if ((req.method === 'GET' || req.method === 'HEAD') && /^\/api\/jobs\/[^/]+\/view-source\.xlsx$/.test(url.pathname)) {
+    return handleViewSourceSummaryDownload(req, res, url.pathname.split('/')[3]);
+  }
   if (req.method === 'POST' && url.pathname === '/api/parse') return handleParse(req, res);
   if (req.method === 'POST' && url.pathname === '/api/restore') return handleRestore(req, res);
   if (req.method === 'POST' && url.pathname === '/api/package') return handlePackage(req, res);
   if (req.method === 'POST' && url.pathname === '/api/count-query') return handleCountQuery(req, res);
+  if (req.method === 'POST' && url.pathname === '/api/view-source-query') return handleViewSourceQuery(req, res);
   if (req.method === 'POST' && /^\/api\/jobs\/[^/]+\/(pause|resume|cancel)$/.test(url.pathname)) {
     const [, , , jobId, action] = url.pathname.split('/');
     return handleJobControl(req, res, jobId, action);
