@@ -122,6 +122,7 @@ const summaryFile = ref(null);
 const summaryTotal = ref(0);
 const summaryZeroTotal = ref(0);
 const countStatus = ref('idle');
+const countPhase = ref('idle');
 const countProgress = ref(0);
 const countText = ref('');
 const parsing = ref(false);
@@ -132,6 +133,25 @@ const currentJobId = ref('');
 const parseMeta = ref(null);
 const notice = ref('');
 const confirmTerminate = ref(false);
+const uploadInputKey = ref(0);
+const objectPage = ref(1);
+const objectPageSize = 50;
+const countPhaseRank = {
+  idle: 0,
+  rechecking: 1,
+  querying: 2,
+  aggregating: 3,
+  completed: 4,
+  failed: 4,
+  canceled: 4
+};
+const countPhaseByStatus = {
+  idle: 'idle',
+  running: 'querying',
+  completed: 'completed',
+  failed: 'failed',
+  canceled: 'canceled'
+};
 let eventSource = null;
 
 const activeModeInfo = computed(() => modes.find((mode) => mode.key === activeMode.value));
@@ -149,6 +169,13 @@ const actionNoun = computed(() => (
 const displayRows = computed(() => {
   if (activeMode.value !== 'view-source') return rows.value;
   return aggregateViewSourceRows(rows.value);
+});
+const objectPageCount = computed(() => Math.max(1, Math.ceil(displayRows.value.length / objectPageSize)));
+const visibleObjectRows = computed(() => {
+  if (activeMode.value !== 'count') return displayRows.value;
+  const safePage = Math.min(objectPage.value, objectPageCount.value);
+  const start = (safePage - 1) * objectPageSize;
+  return displayRows.value.slice(start, start + objectPageSize);
 });
 const completedCount = computed(() => displayRows.value.filter((row) => row.status === 'completed').length);
 const failedCount = computed(() => displayRows.value.filter((row) => row.status === 'failed').length);
@@ -185,7 +212,9 @@ function selectMode(mode) {
     showNotice(`当前${actionNoun.value}任务正在执行，请先暂停或终止后再切换流程。`);
     return;
   }
+  closeJobStream();
   activeMode.value = mode;
+  resetFileSelection();
   rows.value = [];
   summary.value = [];
   summaryFile.value = null;
@@ -193,7 +222,17 @@ function selectMode(mode) {
   summaryZeroTotal.value = 0;
   resetSummaryState();
   parseMeta.value = null;
+  objectPage.value = 1;
   logs.value = ['已切换清单类型，等待新的输入。'];
+}
+
+/**
+ * 方法说明：清空文件选择状态并重建上传控件，使切换功能后可再次选择同名文件。
+ * @returns {*} - 方法执行结果。
+ */
+function resetFileSelection() {
+  selectedFile.value = null;
+  uploadInputKey.value += 1;
 }
 
 /**
@@ -206,6 +245,7 @@ function resetSummaryState() {
   summaryTotal.value = 0;
   summaryZeroTotal.value = 0;
   countStatus.value = 'idle';
+  countPhase.value = 'idle';
   countProgress.value = 0;
   countText.value = '';
 }
@@ -228,6 +268,13 @@ function closeJobStream() {
  */
 function onFileChange(event) {
   selectedFile.value = event.target.files?.[0] || null;
+  objectPage.value = 1;
+  rows.value = [];
+  parseMeta.value = null;
+  resetSummaryState();
+  logs.value = selectedFile.value
+    ? [`已选择文件：${selectedFile.value.name}，等待读取清单。`]
+    : ['等待上传或读取清单...'];
 }
 
 /**
@@ -346,6 +393,7 @@ async function parseList() {
   resetSummaryState();
   logs.value = ['开始读取清单...'];
   parseMeta.value = null;
+  objectPage.value = 1;
 
   const formData = new FormData();
   formData.append('mode', activeMode.value);
@@ -366,6 +414,7 @@ async function parseList() {
     logs.value = payload.logs;
     if (activeMode.value === 'count') {
       countText.value = `已读取 ${payload.rows.length} 行查询清单，请选择查询方式。`;
+      countPhase.value = 'idle';
       countProgress.value = 0;
     }
   } catch (error) {
@@ -390,6 +439,7 @@ async function startRestore(restoreMode) {
   resetSummaryState();
   if (activeMode.value === 'count') {
     countStatus.value = 'running';
+    countPhase.value = 'querying';
     countProgress.value = 1;
     countText.value = `正在启动${actionInfo.title}...`;
   }
@@ -434,12 +484,25 @@ async function startRestore(restoreMode) {
     if (typeof data.summaryTotal === 'number') summaryTotal.value = data.summaryTotal;
     if (typeof data.summaryZeroTotal === 'number') summaryZeroTotal.value = data.summaryZeroTotal;
     if (data.summaryFile !== undefined) summaryFile.value = data.summaryFile;
-    if (data.countStatus) countStatus.value = data.countStatus;
-    if (typeof data.countProgress === 'number') {
-      const terminalCountStatus = ['completed', 'failed', 'canceled'].includes(data.countStatus);
-      countProgress.value = terminalCountStatus ? 100 : Math.max(countProgress.value, data.countProgress);
+    const incomingPhase = data.countPhase || countPhaseByStatus[data.countStatus] || '';
+    if (incomingPhase) {
+      const incomingRank = countPhaseRank[incomingPhase] ?? 0;
+      const currentRank = countPhaseRank[countPhase.value] ?? 0;
+      const incomingProgress = typeof data.countProgress === 'number' ? data.countProgress : countProgress.value;
+      const canApplyCountUpdate = incomingRank > currentRank
+        || (incomingRank === currentRank && incomingProgress >= countProgress.value);
+      if (canApplyCountUpdate) {
+        countPhase.value = incomingPhase;
+        if (data.countStatus) countStatus.value = data.countStatus;
+        if (typeof data.countProgress === 'number') {
+          const terminalCountPhase = ['completed', 'failed', 'canceled'].includes(incomingPhase);
+          countProgress.value = terminalCountPhase ? 100 : Math.max(countProgress.value, data.countProgress);
+        }
+        if (data.countText !== undefined) countText.value = data.countText;
+      } else if (typeof data.countProgress === 'number') {
+        countProgress.value = Math.max(countProgress.value, data.countProgress);
+      }
     }
-    if (data.countText !== undefined) countText.value = data.countText;
     if (data.status === 'completed' || data.status === 'failed' || data.status === 'canceled') {
       running.value = false;
       paused.value = false;
@@ -566,7 +629,7 @@ async function terminateCurrentJob() {
           </div>
 
           <label v-if="activeMode !== 'full'" class="upload-box">
-            <input type="file" accept=".xlsx,.xls,.csv" @change="onFileChange" />
+            <input :key="uploadInputKey" type="file" accept=".xlsx,.xls,.csv" @change="onFileChange" />
             <svg viewBox="0 0 24 24" aria-hidden="true">
               <path d="M12 16V4m0 0 4 4m-4-4-4 4M4 16v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2" />
             </svg>
@@ -680,7 +743,7 @@ async function terminateCurrentJob() {
           </a>
         </div>
 
-        <div v-else class="table-panel">
+        <div class="table-panel">
           <div class="table-header">
             <h2>{{ activeMode === 'package' ? '打包对象' : activeMode === 'count' || activeMode === 'view-source' ? '查询对象' : '恢复对象' }}</h2>
             <div class="metrics">
@@ -708,8 +771,8 @@ async function terminateCurrentJob() {
                 </tr>
               </thead>
               <tbody>
-                <tr v-for="(row, index) in displayRows" :key="row.id">
-                  <td>{{ index + 1 }}</td>
+                <tr v-for="(row, index) in visibleObjectRows" :key="row.id">
+                  <td>{{ activeMode === 'count' ? (objectPage - 1) * objectPageSize + index + 1 : index + 1 }}</td>
                   <td>{{ row.viewName || '-' }}</td>
                   <td v-if="activeMode === 'view-source'" class="source-tables-cell" :title="row.sourceTables">{{ row.sourceTables || '-' }}</td>
                   <template v-else>
@@ -740,6 +803,14 @@ async function terminateCurrentJob() {
                 </tr>
               </tbody>
             </table>
+          </div>
+          <div v-if="activeMode === 'count' && objectPageCount > 1" class="table-pagination">
+            <span>每页 {{ objectPageSize }} 行，共 {{ displayRows.length }} 行</span>
+            <div>
+              <button :disabled="objectPage <= 1" @click="objectPage -= 1">上一页</button>
+              <strong>{{ objectPage }} / {{ objectPageCount }}</strong>
+              <button :disabled="objectPage >= objectPageCount" @click="objectPage += 1">下一页</button>
+            </div>
           </div>
         </div>
       </section>

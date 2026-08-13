@@ -19,6 +19,7 @@ const localConfigPaths = [
 const envPath = path.join(rootDir, '.env');
 const jobs = new Map();
 let generatedSqlSequence = 0;
+let jobSequence = 0;
 
 /**
  * 方法说明：解析环境变量文本，去除首尾空白和包裹引号。
@@ -58,6 +59,137 @@ loadDotEnv(envPath);
 
 fs.mkdirSync(uploadDir, { recursive: true });
 fs.mkdirSync(generatedDir, { recursive: true });
+
+/**
+ * 方法说明：读取大于零的数值型环境变量，非法值回退到默认值。
+ * @param {*} name - 环境变量名称。
+ * @param {*} fallback - 默认数值。
+ * @returns {*} - 可用于时长计算的正数。
+ */
+function readPositiveNumberEnv(name, fallback) {
+  const value = Number(process.env[name]);
+  return Number.isFinite(value) && value > 0 ? value : fallback;
+}
+
+/**
+ * 方法说明：判断文件是否为需要提供下载的数据量或视图源表 Excel 结果。
+ * @param {*} fileName - 文件名称。
+ * @returns {*} - 是否为结果文件。
+ */
+function isDownloadResultFile(fileName) {
+  return /^(count-summary|view-source-summary)-.+\.xlsx$/i.test(fileName);
+}
+
+/**
+ * 方法说明：仅删除指定目录内的文件，避免清理逻辑越界删除其他路径。
+ * @param {*} filePath - 待删除文件路径。
+ * @param {*} allowedDir - 允许清理的根目录。
+ * @returns {*} - 是否成功删除。
+ */
+function removeManagedFile(filePath, allowedDir) {
+  if (!filePath) return false;
+  const resolvedPath = path.resolve(filePath);
+  const resolvedDir = `${path.resolve(allowedDir)}${path.sep}`;
+  if (!resolvedPath.startsWith(resolvedDir) || !fs.existsSync(resolvedPath)) return false;
+  try {
+    fs.unlinkSync(resolvedPath);
+    return true;
+  } catch (error) {
+    console.warn(`清理文件失败：${resolvedPath}，${error.message}`);
+    return false;
+  }
+}
+
+/**
+ * 方法说明：收集执行中任务正在使用的配置和结果文件，防止定时清理误删。
+ * @returns {*} - 受保护文件绝对路径集合。
+ */
+function getActiveArtifactPaths() {
+  const protectedPaths = new Set();
+  for (const job of jobs.values()) {
+    if (!['completed', 'failed', 'canceled'].includes(job.status)) {
+      if (job.configPath) protectedPaths.add(path.resolve(job.configPath));
+      if (job.summaryFile?.filePath) protectedPaths.add(path.resolve(job.summaryFile.filePath));
+    }
+  }
+  return protectedPaths;
+}
+
+/**
+ * 方法说明：按文件最后修改时间清理目录中的过期文件，并跳过执行中任务占用的文件。
+ * @param {*} directory - 待清理目录。
+ * @param {*} resolveRetentionMs - 根据文件名返回保留毫秒数的方法。
+ * @param {*} protectedPaths - 受保护文件路径集合。
+ * @returns {*} - 本次删除的文件数量。
+ */
+function cleanupDirectoryFiles(directory, resolveRetentionMs, protectedPaths = new Set()) {
+  const now = Date.now();
+  let removed = 0;
+  let entries = [];
+  try {
+    entries = fs.readdirSync(directory, { withFileTypes: true });
+  } catch (error) {
+    console.warn(`读取清理目录失败：${directory}，${error.message}`);
+    return removed;
+  }
+  for (const entry of entries) {
+    if (!entry.isFile()) continue;
+    const filePath = path.join(directory, entry.name);
+    if (protectedPaths.has(path.resolve(filePath))) continue;
+    try {
+      const retentionMs = resolveRetentionMs(entry.name);
+      if (now - fs.statSync(filePath).mtimeMs >= retentionMs && removeManagedFile(filePath, directory)) removed += 1;
+    } catch (error) {
+      console.warn(`检查过期文件失败：${filePath}，${error.message}`);
+    }
+  }
+  return removed;
+}
+
+/**
+ * 方法说明：清理上传备份、生成目录中的过期中间文件和结果文件，并移除过期任务状态。
+ * @returns {*} - 各类清理数量。
+ */
+function cleanupExpiredStorage() {
+  const hourMs = 60 * 60 * 1000;
+  const uploadRetentionMs = readPositiveNumberEnv('UPLOAD_FILE_RETENTION_HOURS', 1) * hourMs;
+  const tempRetentionMs = readPositiveNumberEnv('TEMP_FILE_RETENTION_HOURS', 24) * hourMs;
+  const resultRetentionMs = readPositiveNumberEnv('RESULT_FILE_RETENTION_HOURS', 168) * hourMs;
+  const jobRetentionMs = readPositiveNumberEnv('JOB_RETENTION_HOURS', 168) * hourMs;
+  const protectedPaths = getActiveArtifactPaths();
+  const removedUploads = cleanupDirectoryFiles(uploadDir, () => uploadRetentionMs);
+  const removedGenerated = cleanupDirectoryFiles(
+    generatedDir,
+    (fileName) => isDownloadResultFile(fileName) ? resultRetentionMs : tempRetentionMs,
+    protectedPaths
+  );
+  let removedJobs = 0;
+  const now = Date.now();
+  for (const [jobId, job] of jobs) {
+    if (!['completed', 'failed', 'canceled'].includes(job.status)) continue;
+    const finishedAt = job.finishedAt || job.updatedAt || job.createdAt || now;
+    if (now - finishedAt < jobRetentionMs) continue;
+    for (const subscriber of job.subscribers) subscriber.end();
+    jobs.delete(jobId);
+    removedJobs += 1;
+  }
+  if (removedUploads || removedGenerated || removedJobs) {
+    console.log(`临时存储清理完成：上传文件 ${removedUploads} 个，中间/结果文件 ${removedGenerated} 个，过期任务 ${removedJobs} 个。`);
+  }
+  return { removedUploads, removedGenerated, removedJobs };
+}
+
+/**
+ * 方法说明：启动定时存储清理，并使用 unref 避免定时器阻止服务正常退出。
+ * @returns {*} - 定时器对象。
+ */
+function scheduleStorageCleanup() {
+  cleanupExpiredStorage();
+  const intervalMinutes = readPositiveNumberEnv('TEMP_CLEANUP_INTERVAL_MINUTES', 30);
+  const timer = setInterval(cleanupExpiredStorage, intervalMinutes * 60 * 1000);
+  if (typeof timer.unref === 'function') timer.unref();
+  return timer;
+}
 
 const scriptMap = {
   continuous: 'copy_hive_partitions.sh',
@@ -2205,6 +2337,10 @@ function getDryRunReason(restoreMode) {
 }
 
 function sendJob(job, payload = {}) {
+  job.updatedAt = Date.now();
+  if (['completed', 'failed', 'canceled'].includes(job.status) && !job.finishedAt) {
+    job.finishedAt = job.updatedAt;
+  }
   const data = JSON.stringify({
     id: job.id,
     status: job.status,
@@ -2216,6 +2352,7 @@ function sendJob(job, payload = {}) {
     summaryZeroTotal: zeroCountSummary(job.summary || []).length,
     summaryFile: job.summaryFile ? { fileName: job.summaryFile.fileName, url: job.summaryFile.url } : null,
     countStatus: job.countStatus || 'idle',
+    countPhase: job.countPhase || 'idle',
     countProgress: job.countProgress || 0,
     countText: job.countText || '',
     countSkipped: job.countSkipped || 0,
@@ -2239,8 +2376,13 @@ function sleep(ms) {
  * @returns {*} - 方法执行结果。
  */
 function createJob(rows) {
+  jobSequence += 1;
+  const createdAt = Date.now();
   return {
-    id: `job-${Date.now()}`,
+    id: `job-${createdAt}-${jobSequence}`,
+    createdAt,
+    updatedAt: createdAt,
+    finishedAt: null,
     status: 'running',
     rows: rows.map((row) => {
       const invalid = row.status === 'failed';
@@ -2254,6 +2396,7 @@ function createJob(rows) {
     logs: [],
     summary: [],
     countStatus: 'idle',
+    countPhase: 'idle',
     countProgress: 0,
     countText: '',
     countSkipped: 0,
@@ -3285,10 +3428,14 @@ function writeCountSummaryWorkbook(job) {
  * @param {*} status - 方法输入的 status 参数。
  * @param {*} progress - 方法输入的 progress 参数。
  * @param {*} text - 状态文本。
+ * @param {*} phase - 查询阶段，用于区分查询、汇总和最终状态。
  * @returns {*} - 方法执行结果。
  */
-function setCountProgress(job, status, progress, text) {
+function setCountProgress(job, status, progress, text, phase = '') {
   job.countStatus = status;
+  job.countPhase = phase || (
+    status === 'completed' ? 'completed' : status === 'failed' ? 'failed' : status === 'canceled' ? 'canceled' : 'querying'
+  );
   const nextProgress = Math.max(0, Math.min(100, Number(progress) || 0));
   const terminal = status === 'completed' || status === 'failed' || status === 'canceled';
   job.countProgress = terminal ? 100 : Math.max(job.countProgress || 0, nextProgress);
@@ -3889,11 +4036,21 @@ function buildCountSqlStatements(rows, partitionedTables) {
 async function executeCountBatchAsync(job, rows, partitionedTables, label) {
   const statements = buildCountSqlStatements(rows, partitionedTables);
   const sqlPath = writeGeneratedSqlFile('count-direct', statements);
+  for (const row of rows) {
+    row.status = 'running';
+    row.statusText = label;
+    row.progress = Math.max(Number(row.progress || 0), 30);
+  }
   job.logs.push(`${label}，${rows.length} 张表：${sqlPath}`);
   sendJob(job);
 
   try {
     const output = await runBeelineAsync(['-f', sqlPath], { job });
+    for (const row of rows) {
+      row.statusText = '查询完成，正在汇总';
+      row.progress = Math.max(Number(row.progress || 0), 90);
+    }
+    sendJob(job);
     return {
       sqlPaths: [sqlPath],
       summary: parseDirectCountOutput(output, rows, partitionedTables)
@@ -3906,6 +4063,9 @@ async function executeCountBatchAsync(job, rows, partitionedTables, label) {
         error: error.message,
         sqlPath
       };
+      row.status = 'failed';
+      row.statusText = '查询失败（已跳过）';
+      row.progress = 100;
       job.logs.push(`${label}单表失败，已跳过：${row.databaseName}.${row.tableName}（${sqlPath}）：${error.message}`);
       sendJob(job);
       return {
@@ -3916,6 +4076,10 @@ async function executeCountBatchAsync(job, rows, partitionedTables, label) {
     }
 
     const middle = Math.ceil(rows.length / 2);
+    for (const row of rows) {
+      row.statusText = '批次异常，正在拆分重试';
+      row.progress = Math.max(Number(row.progress || 0), 45);
+    }
     job.logs.push(`${label}执行失败，正在拆分为 ${middle} 张和 ${rows.length - middle} 张表重试。`);
     sendJob(job);
     const left = await executeCountBatchAsync(job, rows.slice(0, middle), partitionedTables, `${label}左半批`);
@@ -3933,11 +4097,13 @@ function createCountProgressHeartbeat(job, label, options = {}) {
   const minProgress = options.minProgress || 35;
   const maxProgress = options.maxProgress || 78;
   const step = options.step || 2;
+  const phase = options.phase || 'querying';
   let tick = 0;
   return setInterval(() => {
     if (job.cancelRequested || job.countStatus !== 'running') return;
     tick += 1;
     const nextProgress = Math.min(maxProgress, Math.max(job.countProgress || 0, minProgress) + step);
+    job.countPhase = phase;
     job.countProgress = nextProgress;
     job.countText = label;
     job.logs.push(`${label}，已持续 ${Math.round((tick * intervalMs) / 1000)} 秒，请等待 Hive 查询返回。`);
@@ -3993,43 +4159,47 @@ async function queryCounts(job, configPath, options = {}) {
   const dryRunDoneText = options.dryRunDoneText || '模拟数据量明细已生成，正在写入 Excel。';
   const completedText = options.completedText || '数据量回查完成，完整明细已生成。';
   const failedText = options.failedText || '数据量回查失败，请查看执行日志。';
+  const startPhase = options.startPhase || 'rechecking';
+  const queryPhase = options.queryPhase || 'querying';
+  const aggregatePhase = options.aggregatePhase || 'aggregating';
+  const dryRunPhase = options.dryRunPhase || 'querying';
 
-  setCountProgress(job, 'running', Math.max(job.countProgress || 0, 5), startText);
+  setCountProgress(job, 'running', Math.max(job.countProgress || 0, 5), startText, startPhase);
   if (isExecutionEnabled()) {
     try {
-      setCountProgress(job, 'running', Math.max(job.countProgress || 0, 25), nodeText);
+      setCountProgress(job, 'running', Math.max(job.countProgress || 0, 25), nodeText, queryPhase);
       const result = await queryCountsDirectAsync(job);
-      setCountProgress(job, 'running', 82, nodeDoneText);
+      setCountProgress(job, 'running', 82, nodeDoneText, aggregatePhase);
       job.summary = result.summary;
       job.countFailures = result.failures || [];
       job.countSkipped = job.countFailures.length;
       writeCountSummaryWorkbook(job);
       if (job.countSkipped) {
         job.logs.push(`Node 后端数据量批量回查完成：共 ${result.batchCount || 1} 个 SQL 批次文件，已跳过 ${job.countSkipped} 张异常表。`);
-        setCountProgress(job, 'completed', 100, `数据量查询完成，已跳过 ${job.countSkipped} 张异常表，Excel 明细已生成。`);
+        setCountProgress(job, 'completed', 100, `数据量查询完成，已跳过 ${job.countSkipped} 张异常表，Excel 明细已生成。`, 'completed');
       } else {
         job.logs.push(`Node 后端数据量批量回查完成：共 ${result.batchCount || 1} 个 SQL 批次文件，首个文件 ${result.sqlPath}`);
-        setCountProgress(job, 'completed', 100, completedText);
+        setCountProgress(job, 'completed', 100, completedText, 'completed');
       }
       return true;
     } catch (error) {
       job.logs.push(`Node 后端数据量回查失败：${error.message}`);
       job.summary = [];
-      setCountProgress(job, 'failed', 100, failedText);
+      setCountProgress(job, 'failed', 100, failedText, 'failed');
       return false;
     }
   }
 
-  setCountProgress(job, 'running', 35, dryRunText);
+  setCountProgress(job, 'running', 35, dryRunText, dryRunPhase);
   job.summary = queryRows.flatMap((row, index) => {
     const dates = enumerateDates(row.startDate, row.endDate);
     if (!dates.length) return [makeSummaryItem(row, 'ALL', fallbackCount(row), index)];
     return dates.map((statDate, dateIndex) => makeSummaryItem(row, statDate, fallbackCountForDate(row, statDate), `${index}-${dateIndex}`));
   });
-  setCountProgress(job, 'running', 82, dryRunDoneText);
+  setCountProgress(job, 'running', 82, dryRunDoneText, aggregatePhase);
   writeCountSummaryWorkbook(job);
   job.logs.push('dry-run 使用 Node 后端模拟分区数据量明细。');
-  setCountProgress(job, 'completed', 100, completedText);
+  setCountProgress(job, 'completed', 100, completedText, 'completed');
   return true;
 }
 
@@ -4066,6 +4236,8 @@ async function runJob(job, restoreMode, options) {
   }
   sendJob(job);
 
+  let recoverableRows = [];
+  let countSucceeded = true;
   try {
     if (!job.restoreRows.length) {
       job.logs.push('没有通过清单校验的恢复任务，已跳过数据恢复。');
@@ -4097,12 +4269,24 @@ async function runJob(job, restoreMode, options) {
     }
     sendJob(job);
     await jobCheckpoint(job);
-    const recoverableRows = job.rows.filter((row) => row.status === 'completed');
-    let countSucceeded = true;
+    recoverableRows = job.rows.filter((row) => row.status === 'completed');
     if (recoverableRows.length) {
-      job.countRows = recoverableRows;
+      // 回查使用独立行对象，避免批量查询状态覆盖恢复列表中的最终状态。
+      job.countRows = recoverableRows.map((row) => ({
+        ...row,
+        status: 'pending',
+        statusText: statusText.pending,
+        progress: 0
+      }));
       try {
-        countSucceeded = await queryCounts(job, configPath, { rows: recoverableRows });
+        countSucceeded = await queryCounts(job, configPath, {
+          rows: job.countRows,
+          startText: '恢复完成，开始数据量回查。',
+          nodeText: '数据量回查中：正在查询表和日期分区数据量。',
+          nodeDoneText: '数据量查询完成，正在汇总回查结果。',
+          completedText: '数据量回查完成，正在等待恢复任务最终汇总。',
+          failedText: '恢复完成，但数据量回查失败，请查看执行日志。'
+        });
       } finally {
         delete job.countRows;
       }
@@ -4110,7 +4294,7 @@ async function runJob(job, restoreMode, options) {
       job.logs.push('没有成功完成的恢复任务，已跳过数据量回查。');
       sendJob(job);
     }
-    job.logs.push(countSucceeded ? '恢复执行完成，数据量已回查。' : '恢复执行完成，数据量回查失败，请查看日志。');
+    job.logs.push(countSucceeded ? '恢复执行完成，数据量已回查并完成汇总。' : '恢复执行完成，但数据量回查失败，请查看日志。');
   } catch (error) {
     if (error.code === 'JOB_CANCELED') {
       markJobCanceled(job);
@@ -4130,6 +4314,16 @@ async function runJob(job, restoreMode, options) {
 
   job.status = job.rows.some((row) => row.status === 'failed') ? 'failed' : 'completed';
   job.logs.push(job.status === 'completed' ? '全部恢复任务完成。' : '恢复任务结束，存在失败行。');
+  if (recoverableRows?.length) {
+    const skippedText = job.countSkipped ? `，已跳过 ${job.countSkipped} 张异常表` : '';
+    const finalCountStatus = job.status === 'failed' ? 'failed' : countSucceeded ? 'completed' : 'failed';
+    const finalCountText = job.status === 'failed'
+      ? (countSucceeded ? `恢复失败，部分恢复任务失败；数据量回查和汇总已完成${skippedText}。` : '恢复失败，数据量回查也未完成。')
+      : (countSucceeded ? `恢复完成，数据量回查和汇总已完成${skippedText}。` : '恢复完成，但数据量回查失败，请查看日志。');
+    setCountProgress(job, finalCountStatus, 100, finalCountText, finalCountStatus);
+  } else {
+    setCountProgress(job, 'failed', 100, '恢复失败，没有可回查的成功任务。', 'failed');
+  }
   sendJob(job);
 }
 
@@ -4343,6 +4537,8 @@ async function runCountQueryJob(job, queryMode) {
     const succeeded = await queryCounts(job, result.configPath, {
       startText: '开始数据量查询。',
       nodeText: '正在通过 Node 后端查询表和日期分区数据量。',
+      nodeDoneText: '查询完成，正在汇总数据量结果。',
+      startPhase: 'querying',
       completedText: '数据量查询完成，Excel 明细已生成。',
       failedText: '数据量查询失败，请查看执行日志。'
     });
@@ -4379,9 +4575,11 @@ async function runCountQueryJob(job, queryMode) {
  * @returns {Promise<*>} - 方法执行结果。
  */
 async function handleParse(req, res) {
+  let uploadedFilePaths = [];
   try {
     const body = await readBody(req);
     const { fields, files } = parseMultipart(body, req.headers['content-type']);
+    uploadedFilePaths = Object.values(files).map((file) => file.path).filter(Boolean);
     const { rows, configPath, viewInputPath, fallbackReason } = buildRows(fields, files.file);
     const invalidRows = rows.filter((row) => row.status === 'failed');
     sendJson(res, 200, {
@@ -4408,6 +4606,8 @@ async function handleParse(req, res) {
     });
   } catch (error) {
     sendJson(res, 400, { error: error.message });
+  } finally {
+    for (const filePath of uploadedFilePaths) removeManagedFile(filePath, uploadDir);
   }
 }
 
@@ -4696,3 +4896,4 @@ const host = process.env.HOST || '127.0.0.1';
 server.listen(port, host, () => {
   console.log(`Data recovery console listening on http://${host}:${port}`);
 });
+scheduleStorageCleanup();
